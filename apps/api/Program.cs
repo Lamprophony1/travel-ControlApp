@@ -1,0 +1,102 @@
+using FluentValidation;
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi;
+using Serilog;
+using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
+using TravelControl.Api.Data;
+using TravelControl.Api.Domain;
+using TravelControl.Api.Endpoints;
+using TravelControl.Api.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseSerilog((context, cfg) => cfg.ReadFrom.Configuration(context.Configuration).WriteTo.Console());
+builder.Services.AddProblemDetails();
+builder.Services.AddOpenApi();
+builder.Services.AddSwaggerGen(options => options.AddSecurityDefinition("cookieAuth", new OpenApiSecurityScheme
+{
+    Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Cookie, Name = ".TravelControl.Auth",
+    Description = "Cookie HttpOnly de sesión"
+}));
+builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
+var connection = builder.Configuration.GetConnectionString("Database")
+    ?? "Host=localhost;Port=5432;Database=travel_control;Username=travel;Password=change-me";
+builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connection));
+builder.Services.AddIdentityCore<AppUser>(options =>
+{
+    options.Password.RequiredLength = 12; options.Password.RequireNonAlphanumeric = true;
+    options.Lockout.MaxFailedAccessAttempts = 5; options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+    options.User.RequireUniqueEmail = true; options.SignIn.RequireConfirmedAccount = false;
+}).AddRoles<IdentityRole<Guid>>().AddEntityFrameworkStores<AppDbContext>().AddSignInManager().AddDefaultTokenProviders();
+builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme).AddIdentityCookies(options =>
+{
+    options.ApplicationCookie?.Configure(cookie =>
+    {
+        cookie.Cookie.Name = ".TravelControl.Auth"; cookie.Cookie.HttpOnly = true; cookie.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+        cookie.Cookie.SameSite = SameSiteMode.Strict; cookie.SlidingExpiration = true; cookie.ExpireTimeSpan = TimeSpan.FromHours(8);
+        cookie.Events.OnRedirectToLogin = ctx => { ctx.Response.StatusCode = StatusCodes.Status401Unauthorized; return Task.CompletedTask; };
+        cookie.Events.OnRedirectToAccessDenied = ctx => { ctx.Response.StatusCode = StatusCodes.Status403Forbidden; return Task.CompletedTask; };
+    });
+});
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("CanEdit", p => p.RequireRole(nameof(UserRole.Administrator), nameof(UserRole.Editor)))
+    .AddPolicy("AdminOnly", p => p.RequireRole(nameof(UserRole.Administrator)));
+builder.Services.AddAntiforgery(options => { options.HeaderName = "X-XSRF-TOKEN"; options.Cookie.Name = ".TravelControl.Xsrf"; options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = CookieSecurePolicy.Always; options.Cookie.SameSite = SameSiteMode.Strict; });
+builder.Services.AddRateLimiter(options => options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
+    context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+    { PermitLimit = 8, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
+var origins = builder.Configuration.GetSection("Security:AllowedOrigins").Get<string[]>() ?? ["https://localhost:5173"];
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.WithOrigins(origins).AllowCredentials().AllowAnyHeader().AllowAnyMethod()));
+builder.Services.AddScoped<ExcelImportService>(); builder.Services.AddScoped<ExcelExportService>();
+builder.Services.AddScoped<PassengerQueryService>(); builder.Services.AddScoped<DashboardService>(); builder.Services.AddScoped<AttachmentStorage>();
+builder.Services.AddValidatorsFromAssemblyContaining<Program>();
+builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 10 * 1024 * 1024);
+
+var app = builder.Build();
+app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto });
+app.UseExceptionHandler(); app.UseStatusCodePages(); app.UseRateLimiter(); app.UseCors();
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    ctx.Response.Headers["X-Frame-Options"] = "DENY";
+    ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
+    ctx.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
+    ctx.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
+    ctx.Response.Headers["Cache-Control"] = ctx.Request.Path.StartsWithSegments("/api") ? "no-store" : "no-cache";
+    await next();
+});
+app.UseAuthentication(); app.UseAuthorization();
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Path.StartsWithSegments("/api") && !HttpMethods.IsGet(ctx.Request.Method) && !HttpMethods.IsHead(ctx.Request.Method) && !HttpMethods.IsOptions(ctx.Request.Method))
+        await ctx.RequestServices.GetRequiredService<IAntiforgery>().ValidateRequestAsync(ctx);
+    await next();
+});
+
+if (app.Environment.IsDevelopment()) { app.MapOpenApi(); app.UseSwagger(); app.UseSwaggerUI(); }
+app.MapGet("/health/live", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/health/ready", async (AppDbContext db, CancellationToken ct) => await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
+app.MapTravelControlApi();
+
+await DatabaseSeeder.SeedAsync(app.Services);
+
+var importIndex = Array.IndexOf(args, "--import");
+if (importIndex >= 0 && args.Length > importIndex + 1)
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    var path = Path.GetFullPath(args[importIndex + 1]);
+    await using var file = File.OpenRead(path);
+    var summary = await scope.ServiceProvider.GetRequiredService<ExcelImportService>()
+        .ProcessAsync(file, Path.GetFileName(path), args.Contains("--dry-run"), null, CancellationToken.None);
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(summary, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    return;
+}
+
+await app.RunAsync();
+
+public partial class Program;

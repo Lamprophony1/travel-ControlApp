@@ -1,0 +1,13 @@
+data/private/
+.env
+**/bin/
+**/obj/
+**/node_modules/
+**/dist/
+**/coverage/
+**/playwright-report/
+**/.cache/
+attachments/
+*.user
+*.suo
+.vs/

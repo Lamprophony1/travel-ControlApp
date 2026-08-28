@@ -1,0 +1,11 @@
+.git
+.env
+.vs
+**/bin
+**/obj
+**/node_modules
+**/dist
+**/coverage
+data/private
+attachments
+

@@ -1,5 +1,14 @@
 <Solution>
-  <Project Path="apps/api/TravelControl.Api.csproj" />
-  <Project Path="tests/TravelControl.Api.Tests/TravelControl.Api.Tests.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/TravelControl.Domain/TravelControl.Domain.csproj" />
+    <Project Path="src/TravelControl.Application/TravelControl.Application.csproj" />
+    <Project Path="src/TravelControl.Infrastructure/TravelControl.Infrastructure.csproj" />
+    <Project Path="src/TravelControl.Api/TravelControl.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TravelControl.Domain.Tests/TravelControl.Domain.Tests.csproj" />
+    <Project Path="tests/TravelControl.Application.Tests/TravelControl.Application.Tests.csproj" />
+    <Project Path="tests/TravelControl.Infrastructure.Tests/TravelControl.Infrastructure.Tests.csproj" />
+    <Project Path="tests/TravelControl.Api.Tests/TravelControl.Api.Tests.csproj" />
+  </Folder>
 </Solution>
-

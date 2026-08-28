@@ -1,144 +1,83 @@
-# Control de Viaje — Boda Cielito & Ronaldo
+# Control de Viaje
 
-Aplicación web privada para controlar pasajeros, pasaportes, documentación, habitaciones, vuelos, maletas de 23 kg, transfers, comprobantes y seguimientos del viaje a Riviera Maya en septiembre de 2026.
+Aplicación privada, mobile-first y PWA para administrar pasajeros, pasaportes, documentación, habitaciones, vuelos, tickets, equipaje de 23 kg, seguimiento y un único estado global de transfer.
 
-## Arquitectura
+## Stack y arquitectura
 
-- Frontend: React 19, TypeScript estricto, Vite, Material UI, TanStack Query/Table, React Hook Form, Zod y PWA.
-- Backend: ASP.NET Core 10, Entity Framework Core, PostgreSQL, Identity con cookies HttpOnly, FluentValidation, ClosedXML y OpenAPI.
-- Despliegue: Docker Compose, PostgreSQL persistente, Caddy con HTTPS local, volumen privado para comprobantes y health checks.
-- Pruebas: xUnit v3, Vitest/Testing Library y Playwright.
+- `src/TravelControl.Domain`: entidades y enums sin dependencias de infraestructura.
+- `src/TravelControl.Application`: contratos, normalización y reglas calculadas.
+- `src/TravelControl.Infrastructure`: EF Core/SQLite, Identity, XLSX, archivos y consultas.
+- `src/TravelControl.Api`: host same-origin, seguridad y Minimal APIs.
+- `web`: React 19, TypeScript estricto, MUI, TanStack Query y PWA.
+- `tests`: xUnit por capa, Vitest y Playwright desktop/mobile.
 
-El repositorio no contiene datos reales. `data/private/` está ignorado por Git y debe mantenerse fuera de copias públicas.
+El frontend se compila dentro de `wwwroot`; producción es una sola imagen y un solo contenedor. SQLite, adjuntos y claves de protección viven bajo `/var/lib/travel-control`.
 
-## Inicio rápido con Docker
+## Inicio rápido
 
-Requisitos: Docker Engine con Compose v2.
-
-1. Copiar `.env.example` a `.env`.
-2. Reemplazar `POSTGRES_PASSWORD` por un secreto largo y aleatorio.
-3. Ejecutar:
+Requisitos: Docker Engine y Compose v2.
 
 ```sh
-docker compose up --build
+docker compose up --build -d
 ```
 
-4. Abrir `https://localhost`. Caddy genera una CA local; el navegador puede pedir confiar en ella la primera vez.
-5. La primera visita redirige a `/setup`, donde se registra el primer administrador. No hay credenciales predeterminadas.
+Abrir `http://127.0.0.1:8080`. La primera visita permite crear el primer administrador; no existen usuarios ni contraseñas predeterminadas. En producción, publicar detrás de un proxy HTTPS y usar `COOKIE_SECURE=true`.
 
-Las migraciones se aplican de forma automática al iniciar la API. Los servicios exponen health checks en `/health/live` y `/health/ready` a través del proxy.
+## Desarrollo
 
-## Variables de entorno
-
-| Variable | Uso |
-|---|---|
-| `POSTGRES_DB` | Base PostgreSQL. |
-| `POSTGRES_USER` | Usuario PostgreSQL. |
-| `POSTGRES_PASSWORD` | Secreto obligatorio; nunca versionarlo. |
-| `ALLOWED_ORIGIN` | Origen HTTPS permitido por CORS. |
-| `ATTACHMENT_MAX_BYTES` | Tamaño máximo de cada comprobante. |
-
-En desarrollo sin Docker, la API también acepta `ConnectionStrings__Database`, `Security__AllowedOrigins__0` y `Storage__Root` mediante variables o user-secrets.
-
-## Desarrollo local
-
-Requisitos: .NET SDK 10, Node.js 24 LTS y PostgreSQL 18.
+Requisitos: .NET SDK 10 y Node.js 24.
 
 ```sh
 dotnet tool restore
 dotnet restore TravelControl.slnx
-dotnet run --project apps/api/TravelControl.Api.csproj
+dotnet run --project src/TravelControl.Api
 ```
 
 En otra terminal:
 
 ```sh
-cd apps/web
-npm install
+cd web
+npm ci
 npm run dev
 ```
 
-Vite publica la interfaz en `http://localhost:5173` y redirige `/api` a la API en `http://localhost:5090`. Para probar cookies `Secure` fuera de Docker, usá HTTPS o ajustá solo el perfil local de desarrollo; producción siempre exige HTTPS.
+El perfil Development usa SQLite en `.dev/` y cookies compatibles con HTTP local. Ningún dato privado debe entrar al repositorio.
 
-## Migraciones
+## Bootstrap privado e importación
 
-```sh
-dotnet ef migrations add NombreDeMigracion --project apps/api/TravelControl.Api.csproj --output-dir Data/Migrations
-dotnet ef database update --project apps/api/TravelControl.Api.csproj
-```
-
-La migración inicial ya está incluida. Antes de una migración productiva, crear un backup de PostgreSQL.
-
-## Importar el Excel maestro
-
-Colocar el archivo únicamente en:
-
-```text
-data/private/Control_viaje_boda_Cielito_Ronaldo.xlsx
-```
-
-Desde la interfaz, ingresar como administrador, abrir **Importar / exportar**, elegir el XLSX, ejecutar **Vista previa**, revisar advertencias y confirmar. La confirmación vuelve a procesar el archivo dentro de una transacción.
-
-También existe un comando administrativo:
+El workbook maestro se coloca fuera de Git en `data/private/Control_viaje.xlsx`. Para inicializar una base vacía desde Docker:
 
 ```sh
-dotnet run --project apps/api/TravelControl.Api.csproj -- --import data/private/Control_viaje_boda_Cielito_Ronaldo.xlsx --dry-run
-dotnet run --project apps/api/TravelControl.Api.csproj -- --import data/private/Control_viaje_boda_Cielito_Ronaldo.xlsx
+BOOTSTRAP_IMPORT_ENABLED=true BOOTSTRAP_IMPORT_REQUIRED=true docker compose up --build
 ```
 
-El importador busca hojas y columnas por nombre normalizado, conserva texto original, usa `Control pasajeros` y `Habitaciones` como fuentes autoritativas, no importa métricas del Dashboard y no duplica datos al repetir un archivo.
+Antes de confirmar, el importador ejecuta el mismo dry-run transaccional que la UI. El set esperado actual es 46 pasajeros y 25 habitaciones: 44/24 de Top Travel y 2/1 de Bespoke. Las columnas heredadas de responsable o transfer individual se ignoran e informan; no se crean filas vacías de vuelo, equipaje o seguimiento. El Dashboard del XLSX nunca es fuente autoritativa.
 
-## Pruebas, lint y build
+Importación administrativa por CLI:
 
 ```sh
-dotnet test TravelControl.slnx
-cd apps/web
+dotnet run --project src/TravelControl.Api -- --import data/private/Control_viaje.xlsx --dry-run
+dotnet run --project src/TravelControl.Api -- --import data/private/Control_viaje.xlsx
+```
+
+## Verificación
+
+```sh
+dotnet test TravelControl.slnx -c Release
+cd web
 npm run lint
 npm test
 npm run build
+npm run e2e
 ```
 
-E2E requiere el stack levantado y credenciales de un entorno efímero:
+Playwright usa `E2E_BASE_URL` y prueba Chromium en desktop y Pixel 7. La prueba privada completa solo corre si se entrega `E2E_WORKBOOK_PATH` desde un almacén seguro.
 
-```sh
-E2E_ADMIN_EMAIL=admin@example.test E2E_ADMIN_PASSWORD='...' npm run e2e
-```
+## Operación
 
-La prueba del workbook maestro se ejecuta si el archivo privado existe y se omite de forma segura cuando no está disponible en CI.
+- Salud: `/health/live` y `/health/ready`.
+- Backup consistente: detener escrituras y respaldar el volumen `travel-control-data` completo.
+- Exportaciones: XLSX de control, XLSX de pendientes, CSV enmascarado y JSON administrativo.
+- Migraciones: `dotnet ef migrations add Nombre --project src/TravelControl.Infrastructure --startup-project src/TravelControl.Api --output-dir Persistence/Migrations`.
 
-## Exportaciones
-
-La pantalla administrativa genera:
-
-- XLSX con Dashboard, Control pasajeros, Habitaciones y Fuentes y uso.
-- CSV de pasajeros y XLSX operativo de pendientes.
-- Respaldo JSON para administradores.
-
-Los pasaportes se exportan enmascarados. El XLSX usa fechas `DD/MM/YYYY`, filtros, filas congeladas, anchos y estados en español.
-
-## Comprobantes
-
-Los PDF, PNG y JPEG se guardan en el volumen `attachment-data`, fuera del frontend y del repositorio. Solo se sirven mediante endpoints autenticados. Se valida tamaño, extensión derivada, MIME declarado, firma binaria, nombre seguro y SHA-256. Un hash repetido no vuelve a almacenar el archivo.
-
-## Backups y restauración
-
-- PostgreSQL: usar `pg_dump` contra el servicio `db` y cifrar el archivo resultante.
-- Comprobantes: respaldar el volumen `attachment-data` junto con la base para mantener referencias consistentes.
-- Configuración Caddy: respaldar `caddy-data` si se confía en su CA local.
-- Probar periódicamente la restauración en un entorno aislado.
-
-No almacenar backups con pasaportes o documentos en servicios públicos sin cifrado y control de acceso.
-
-## Despliegue
-
-Consultar [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Para producción real, reemplazar el host `localhost` y el certificado interno de Caddy por dominio y certificado válidos, rotar secretos, habilitar backups automáticos y centralizar logs sin datos sensibles.
-
-## Documentación técnica
-
-- [Arquitectura](docs/ARCHITECTURE.md)
-- [Modelo de datos](docs/DATA_MODEL.md)
-- [Reglas de negocio](docs/BUSINESS_RULES.md)
-- [Importación y exportación](docs/IMPORT_EXPORT.md)
-- [Seguridad](docs/SECURITY.md)
-- [Despliegue](docs/DEPLOYMENT.md)
-- [Decisiones](docs/DECISIONS.md)
+Más detalle: [arquitectura](docs/ARCHITECTURE.md), [modelo](docs/DATA_MODEL.md), [reglas](docs/BUSINESS_RULES.md), [importación](docs/IMPORT_EXPORT.md), [seguridad](docs/SECURITY.md), [despliegue](docs/DEPLOYMENT.md) y [decisiones](docs/DECISIONS.md).

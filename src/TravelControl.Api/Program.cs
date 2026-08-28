@@ -1,17 +1,19 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Antiforgery;
-using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using Serilog;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
-using TravelControl.Api.Data;
-using TravelControl.Api.Domain;
 using TravelControl.Api.Endpoints;
-using TravelControl.Api.Services;
+using TravelControl.Domain;
+using TravelControl.Infrastructure.Identity;
+using TravelControl.Infrastructure.Persistence;
+using TravelControl.Infrastructure.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog((context, cfg) => cfg.ReadFrom.Configuration(context.Configuration).WriteTo.Console());
@@ -24,21 +26,32 @@ builder.Services.AddSwaggerGen(options => options.AddSecurityDefinition("cookieA
 }));
 builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
-var connection = builder.Configuration.GetConnectionString("Database")
-    ?? "Host=localhost;Port=5432;Database=travel_control;Username=travel;Password=change-me";
-builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connection));
+var connection = builder.Configuration.GetConnectionString("Database") ?? "Data Source=/var/lib/travel-control/data/travel-control.db";
+builder.Services.AddDbContext<AppDbContext>(options => options.UseSqlite(connection));
+builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(
+    builder.Configuration["Security:DataProtectionKeys"] ?? "/var/lib/travel-control/keys"));
 builder.Services.AddIdentityCore<AppUser>(options =>
 {
-    options.Password.RequiredLength = 12; options.Password.RequireNonAlphanumeric = true;
-    options.Lockout.MaxFailedAccessAttempts = 5; options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
-    options.User.RequireUniqueEmail = true; options.SignIn.RequireConfirmedAccount = false;
+    options.Password.RequiredLength = 12;
+    options.Password.RequireDigit = true;
+    options.Password.RequireLowercase = true;
+    options.Password.RequireUppercase = true;
+    options.Password.RequireNonAlphanumeric = true;
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+    options.User.RequireUniqueEmail = true;
 }).AddRoles<IdentityRole<Guid>>().AddEntityFrameworkStores<AppDbContext>().AddSignInManager().AddDefaultTokenProviders();
+var secureCookies = builder.Configuration.GetValue("Security:CookieSecure", !builder.Environment.IsDevelopment());
 builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme).AddIdentityCookies(options =>
 {
     options.ApplicationCookie?.Configure(cookie =>
     {
-        cookie.Cookie.Name = ".TravelControl.Auth"; cookie.Cookie.HttpOnly = true; cookie.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-        cookie.Cookie.SameSite = SameSiteMode.Strict; cookie.SlidingExpiration = true; cookie.ExpireTimeSpan = TimeSpan.FromHours(8);
+        cookie.Cookie.Name = ".TravelControl.Auth";
+        cookie.Cookie.HttpOnly = true;
+        cookie.Cookie.SecurePolicy = secureCookies ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
+        cookie.Cookie.SameSite = SameSiteMode.Strict;
+        cookie.SlidingExpiration = true;
+        cookie.ExpireTimeSpan = TimeSpan.FromHours(8);
         cookie.Events.OnRedirectToLogin = ctx => { ctx.Response.StatusCode = StatusCodes.Status401Unauthorized; return Task.CompletedTask; };
         cookie.Events.OnRedirectToAccessDenied = ctx => { ctx.Response.StatusCode = StatusCodes.Status403Forbidden; return Task.CompletedTask; };
     });
@@ -46,44 +59,63 @@ builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme).AddIdent
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("CanEdit", p => p.RequireRole(nameof(UserRole.Administrator), nameof(UserRole.Editor)))
     .AddPolicy("AdminOnly", p => p.RequireRole(nameof(UserRole.Administrator)));
-builder.Services.AddAntiforgery(options => { options.HeaderName = "X-XSRF-TOKEN"; options.Cookie.Name = ".TravelControl.Xsrf"; options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = CookieSecurePolicy.Always; options.Cookie.SameSite = SameSiteMode.Strict; });
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-XSRF-TOKEN";
+    options.Cookie.Name = ".TravelControl.Xsrf";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = secureCookies ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+});
 builder.Services.AddRateLimiter(options => options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
     context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
     { PermitLimit = 8, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
-var origins = builder.Configuration.GetSection("Security:AllowedOrigins").Get<string[]>() ?? ["https://localhost:5173"];
-builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy.WithOrigins(origins).AllowCredentials().AllowAnyHeader().AllowAnyMethod()));
-builder.Services.AddScoped<ExcelImportService>(); builder.Services.AddScoped<ExcelExportService>();
-builder.Services.AddScoped<PassengerQueryService>(); builder.Services.AddScoped<DashboardService>(); builder.Services.AddScoped<AttachmentStorage>();
+builder.Services.AddScoped<ExcelImportService>();
+builder.Services.AddScoped<ExcelExportService>();
+builder.Services.AddScoped<PassengerQueryService>();
+builder.Services.AddScoped<DashboardService>();
+builder.Services.AddScoped<AttachmentStorage>();
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 10 * 1024 * 1024);
 
 var app = builder.Build();
-app.UseForwardedHeaders(new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto });
-app.UseExceptionHandler(); app.UseStatusCodePages(); app.UseRateLimiter(); app.UseCors();
+var forwarded = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto, ForwardLimit = 1 };
+forwarded.KnownIPNetworks.Clear();
+forwarded.KnownProxies.Clear();
+app.UseForwardedHeaders(forwarded);
+app.UseExceptionHandler();
+app.UseStatusCodePages();
+app.UseRateLimiter();
 app.Use(async (ctx, next) =>
 {
     ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
     ctx.Response.Headers["X-Frame-Options"] = "DENY";
     ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
     ctx.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
-    ctx.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
-    ctx.Response.Headers["Cache-Control"] = ctx.Request.Path.StartsWithSegments("/api") ? "no-store" : "no-cache";
+    ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+    if (ctx.Request.Path.StartsWithSegments("/api")) ctx.Response.Headers["Cache-Control"] = "no-store";
     await next();
 });
-app.UseAuthentication(); app.UseAuthorization();
+app.UseAuthentication();
+app.UseAuthorization();
 app.Use(async (ctx, next) =>
 {
-    if (ctx.Request.Path.StartsWithSegments("/api") && !HttpMethods.IsGet(ctx.Request.Method) && !HttpMethods.IsHead(ctx.Request.Method) && !HttpMethods.IsOptions(ctx.Request.Method))
+    if (ctx.Request.Path.StartsWithSegments("/api") && !HttpMethods.IsGet(ctx.Request.Method)
+        && !HttpMethods.IsHead(ctx.Request.Method) && !HttpMethods.IsOptions(ctx.Request.Method))
         await ctx.RequestServices.GetRequiredService<IAntiforgery>().ValidateRequestAsync(ctx);
     await next();
 });
 
 if (app.Environment.IsDevelopment()) { app.MapOpenApi(); app.UseSwagger(); app.UseSwaggerUI(); }
 app.MapGet("/health/live", () => Results.Ok(new { status = "ok" }));
-app.MapGet("/health/ready", async (AppDbContext db, CancellationToken ct) => await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
+app.MapGet("/health/ready", async (AppDbContext db, CancellationToken ct) =>
+    await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 app.MapTravelControlApi();
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.MapFallbackToFile("index.html");
 
-await DatabaseSeeder.SeedAsync(app.Services);
+await DatabaseSeeder.InitializeAsync(app.Services);
 
 var importIndex = Array.IndexOf(args, "--import");
 if (importIndex >= 0 && args.Length > importIndex + 1)

@@ -7,23 +7,24 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'prompt',
-      includeAssets: ['icon.svg', 'offline.html'],
+      includeAssets: ['icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'offline.html'],
       manifest: {
-        name: 'Control de Viaje — Boda Cielito & Ronaldo',
+        name: 'Control de Viaje',
         short_name: 'Control de Viaje',
-        description: 'Control privado de pasajeros, alojamiento, vuelos, equipaje y transfers.',
+        description: 'Control privado de pasajeros, alojamiento, vuelos, equipaje y transfer grupal.',
         theme_color: '#12304a',
         background_color: '#f4f8fb',
         display: 'standalone',
         start_url: '/',
         icons: [
-          { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-          { src: '/icon-maskable.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' }
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,woff2}'],
-        navigateFallback: '/offline.html',
+        globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//, /^\/health\//],
         runtimeCaching: []
       }
@@ -31,4 +32,3 @@ export default defineConfig({
   ],
   server: { proxy: { '/api': 'http://localhost:5090', '/health': 'http://localhost:5090' } }
 })
-

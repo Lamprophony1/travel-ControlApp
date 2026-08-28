@@ -1,163 +1,126 @@
 using ClosedXML.Excel;
 using Microsoft.EntityFrameworkCore;
-using TravelControl.Api.Data;
-using TravelControl.Api.Domain;
+using System.Text;
+using System.Text.Json;
+using TravelControl.Application.Services;
+using TravelControl.Domain;
+using TravelControl.Infrastructure.Persistence;
 
-namespace TravelControl.Api.Services;
+namespace TravelControl.Infrastructure.Services;
 
 public sealed class ExcelExportService(AppDbContext db, PassengerQueryService passengerQueries)
 {
     private static readonly XLColor Navy = XLColor.FromHtml("#12304A");
-    private static readonly XLColor Turquoise = XLColor.FromHtml("#00A6A6");
+    private static readonly XLColor Turquoise = XLColor.FromHtml("#008A8C");
 
     public async Task<byte[]> ExportAsync(CancellationToken ct)
     {
-        var passengers = await passengerQueries.BaseQuery().AsNoTracking().OrderBy(x => x.FullName).ToListAsync(ct);
+        var passengers = await passengerQueries.BaseQuery().OrderBy(x => x.FullName).ToListAsync(ct);
         var rooms = await db.RoomReservations.AsNoTracking().Include(x => x.Operator).Include(x => x.Passengers).OrderBy(x => x.InternalCode).ToListAsync(ct);
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        using var wb = new XLWorkbook();
-        BuildDashboard(wb.AddWorksheet("Dashboard"), passengers, rooms, today);
-        BuildPassengers(wb.AddWorksheet("Control pasajeros"), passengers, today);
-        BuildRooms(wb.AddWorksheet("Habitaciones"), rooms);
-        BuildSources(wb.AddWorksheet("Fuentes y uso"));
-        using var stream = new MemoryStream();
-        wb.SaveAs(stream);
-        return stream.ToArray();
+        var transfer = await db.TripTransferStatuses.AsNoTracking().SingleAsync(x => x.Trip.IsActive, ct);
+        using var workbook = new XLWorkbook();
+        BuildDashboard(workbook.AddWorksheet("Dashboard"), passengers, rooms, transfer);
+        BuildPassengers(workbook.AddWorksheet("Control pasajeros"), passengers);
+        BuildRooms(workbook.AddWorksheet("Habitaciones"), rooms);
+        BuildSources(workbook.AddWorksheet("Fuentes y uso"));
+        using var stream = new MemoryStream(); workbook.SaveAs(stream); return stream.ToArray();
     }
 
     public async Task<string> ExportBackupJsonAsync(CancellationToken ct)
     {
-        var data = new
-        {
-            exportedAt = DateTimeOffset.UtcNow,
-            trips = await db.Trips.AsNoTracking().ToListAsync(ct),
-            operators = await db.Operators.AsNoTracking().ToListAsync(ct),
-            passengers = await db.Passengers.AsNoTracking().ToListAsync(ct),
-            rooms = await db.RoomReservations.AsNoTracking().ToListAsync(ct),
+        var data = new { exportedAt = DateTimeOffset.UtcNow, trips = await db.Trips.AsNoTracking().ToListAsync(ct),
+            tripTransferStatuses = await db.TripTransferStatuses.AsNoTracking().ToListAsync(ct), operators = await db.Operators.AsNoTracking().ToListAsync(ct),
+            passengers = await db.Passengers.AsNoTracking().ToListAsync(ct), rooms = await db.RoomReservations.AsNoTracking().ToListAsync(ct),
             flights = await db.FlightBookings.AsNoTracking().Include(x => x.Segments).Include(x => x.PassengerFlights).ToListAsync(ct),
-            baggage = await db.BaggageEntitlements.AsNoTracking().ToListAsync(ct),
-            transfers = await db.TransferBookings.AsNoTracking().Include(x => x.PassengerTransfers).ToListAsync(ct),
-            followUps = await db.FollowUps.AsNoTracking().ToListAsync(ct)
-        };
-        return System.Text.Json.JsonSerializer.Serialize(data, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            baggage = await db.BaggageEntitlements.AsNoTracking().ToListAsync(ct), followUps = await db.FollowUps.AsNoTracking().ToListAsync(ct) };
+        return JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
     }
 
     public async Task<byte[]> ExportPassengersCsvAsync(CancellationToken ct)
     {
-        var people = await passengerQueries.BaseQuery().AsNoTracking().OrderBy(x => x.FullName).ToListAsync(ct);
-        var lines = new List<string> { "Nombre,Pasaporte,Operadora,Código interno de grupo,Estado general,Avance,Próxima acción,Responsable" };
+        var people = await passengerQueries.BaseQuery().OrderBy(x => x.FullName).ToListAsync(ct);
+        var lines = new List<string> { "Nombre,Pasaporte,Operadora,Código interno de grupo,Estado general,Avance,Próxima acción,Fecha próxima acción" };
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        foreach (var p in people)
+        foreach (var passenger in people)
         {
-            var state = BusinessRules.CalculatePassenger(p, today);
-            lines.Add(string.Join(',', new[] { p.FullName, PassengerQueryService.MaskPassport(p.PassportNumber), p.PrimaryOperator?.Name, p.RoomReservation?.InternalCode,
-                StatusLabel(state.OverallStatus), state.ProgressPercent.ToString(System.Globalization.CultureInfo.InvariantCulture), p.NextAction, p.InternalOwner }.Select(Csv)));
+            var state = BusinessRules.CalculatePassenger(passenger, today);
+            lines.Add(string.Join(',', new[] { passenger.FullName, PassengerQueryService.MaskPassport(passenger.PassportNumber), passenger.PrimaryOperator?.Name,
+                passenger.RoomReservation?.InternalCode, state.OverallStatus.ToString(), state.ProgressPercent.ToString(), passenger.NextAction,
+                passenger.NextActionDueDate?.ToString("yyyy-MM-dd") }.Select(Csv)));
         }
-        return System.Text.Encoding.UTF8.GetBytes(string.Join("\r\n", lines));
+        return Encoding.UTF8.GetBytes(string.Join("\r\n", lines));
     }
 
     public async Task<byte[]> ExportPendingAsync(CancellationToken ct)
     {
-        var people = await passengerQueries.BaseQuery().AsNoTracking().OrderBy(x => x.FullName).ToListAsync(ct);
+        var people = await passengerQueries.BaseQuery().OrderBy(x => x.FullName).ToListAsync(ct);
+        var transfer = await db.TripTransferStatuses.AsNoTracking().SingleAsync(x => x.Trip.IsActive, ct);
+        using var workbook = new XLWorkbook(); var sheet = workbook.AddWorksheet("Pendientes");
+        Title(sheet, "Pendientes del viaje", 5); Row(sheet, 2, "Alcance", "Elemento", "Requisito", "Estado", "Próxima acción"); Header(sheet.Range(2, 1, 2, 5));
+        var row = 3;
+        if (!transfer.IsConfirmed) Row(sheet, row++, "Global", "Transfer grupal", "Confirmación única", "Pendiente", transfer.Notes);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        using var wb = new XLWorkbook(); var ws = wb.AddWorksheet("Pendientes");
-        var headers = new[] { "Pasajero", "Estado general", "Avance", "Pendientes", "Alertas", "Próxima acción", "Responsable", "Fecha límite" };
-        ws.Cell(1, 1).InsertData(new[] { headers }); var row = 2;
-        foreach (var p in people)
+        foreach (var passenger in people)
+            foreach (var requirement in BusinessRules.CalculatePassenger(passenger, today).Requirements.Where(x => !BusinessRules.IsResolved(x)))
+                Row(sheet, row++, "Pasajero", passenger.FullName, requirement.Label, requirement.Status, passenger.NextAction);
+        sheet.Columns().AdjustToContents(12, 42); using var stream = new MemoryStream(); workbook.SaveAs(stream); return stream.ToArray();
+    }
+
+    private static void BuildDashboard(IXLWorksheet sheet, IReadOnlyList<Passenger> passengers, IReadOnlyList<RoomReservation> rooms, TripTransferStatus transfer)
+    {
+        Title(sheet, "Estado general del viaje", 4); Row(sheet, 3, "Indicador", "Valor", "Total", "%"); Header(sheet.Range(3, 1, 3, 4));
+        var states = passengers.Select(x => BusinessRules.CalculatePassenger(x, DateOnly.FromDateTime(DateTime.UtcNow))).ToArray();
+        var trip = BusinessRules.CalculateTrip(states, transfer.IsConfirmed); var ready = states.Count(x => x.OverallStatus == PassengerOverallStatus.Ready);
+        Row(sheet, 4, "Pasajeros", passengers.Count, passengers.Count, passengers.Count == 0 ? 0 : 100);
+        Row(sheet, 5, "Pasajeros listos", ready, passengers.Count, Percent(ready, passengers.Count));
+        Row(sheet, 6, "Habitaciones confirmadas", rooms.Count(x => x.Status == VerificationStatus.Confirmed), rooms.Count, Percent(rooms.Count(x => x.Status == VerificationStatus.Confirmed), rooms.Count));
+        Row(sheet, 7, "Progreso global", trip.ProgressPercent, 100, trip.ProgressPercent);
+        Row(sheet, 8, "Transfer grupal", transfer.IsConfirmed ? "Confirmado" : "Pendiente", "Único", transfer.IsConfirmed ? 100 : 0);
+        sheet.Columns().AdjustToContents(12, 38); sheet.SheetView.FreezeRows(3);
+    }
+
+    private static void BuildPassengers(IXLWorksheet sheet, IReadOnlyList<Passenger> passengers)
+    {
+        var headers = new[] { "Pasajero", "Pasaporte", "Operadora", "Habitación / grupo", "Pasaporte", "Documentación", "Habitación", "Vuelo", "Maleta 23 kg", "Avance", "Próxima acción", "Fecha próxima acción", "Observaciones" };
+        Row(sheet, 1, headers.Cast<object?>().ToArray()); Header(sheet.Range(1, 1, 1, headers.Length)); var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        for (var index = 0; index < passengers.Count; index++)
         {
-            var state = BusinessRules.CalculatePassenger(p, today); if (state.OverallStatus == PassengerOverallStatus.Ready) continue;
-            ws.Cell(row++, 1).InsertData(new[] { new object?[] { p.FullName, StatusLabel(state.OverallStatus), state.ProgressPercent / 100m,
-                string.Join(", ", state.Requirements.Where(x => !BusinessRules.IsResolved(x)).Select(x => x.Label)), string.Join(" · ", state.Alerts),
-                p.NextAction, p.InternalOwner, p.NextActionDueDate?.ToDateTime(TimeOnly.MinValue) } });
+            var p = passengers[index]; var state = BusinessRules.CalculatePassenger(p, today); var row = index + 2;
+            Row(sheet, row, p.FullName, PassengerQueryService.MaskPassport(p.PassportNumber), p.PrimaryOperator?.Name, p.RoomReservation?.InternalCode,
+                Status(state, "passport"), Status(state, "documentation"), Status(state, "room"), Status(state, "flight"), Status(state, "baggage"),
+                state.ProgressPercent, p.NextAction, p.NextActionDueDate, p.Notes); sheet.Cell(row, 12).Style.DateFormat.Format = "yyyy-mm-dd";
         }
-        StyleHeader(ws.Range(1, 1, 1, headers.Length)); ws.Range(1, 1, Math.Max(2, row - 1), headers.Length).CreateTable("PendingExport");
-        ws.SheetView.FreezeRows(1); ws.RangeUsed()!.SetAutoFilter(); ws.Columns(1, headers.Length).AdjustToContents(1, Math.Min(row, 60));
-        foreach (var column in new[] { 4, 5, 6 }) ws.Column(column).Width = 36;
-        ws.Column(3).Style.NumberFormat.Format = "0%"; ws.Column(8).Style.DateFormat.Format = "dd/MM/yyyy";
-        using var stream = new MemoryStream(); wb.SaveAs(stream); return stream.ToArray();
+        if (passengers.Count > 0) sheet.Range(1, 1, passengers.Count + 1, headers.Length).CreateTable("PassengerControl");
+        sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
     }
 
-    private static void BuildDashboard(IXLWorksheet ws, List<Passenger> passengers, List<RoomReservation> rooms, DateOnly today)
+    private static void BuildRooms(IXLWorksheet sheet, IReadOnlyList<RoomReservation> rooms)
     {
-        ws.Cell("A1").Value = "CONTROL DE VIAJE — BODA CIELITO & RONALDO";
-        ws.Range("A1:F1").Merge().Style.Fill.BackgroundColor = Navy;
-        ws.Range("A1:F1").Style.Font.SetBold().Font.SetFontColor(XLColor.White).Font.SetFontSize(16);
-        var states = passengers.Select(x => BusinessRules.CalculatePassenger(x, today)).ToList();
-        var values = new object?[,]
+        var headers = new[] { "Código interno de grupo", "Operadora", "Estado", "Hotel / propiedad", "Tipo habitación", "Ocupantes", "Capacidad", "Check-in", "Check-out", "Noches", "Reserva", "Plan", "Fuente", "Contacto", "Observaciones" };
+        Row(sheet, 1, headers.Cast<object?>().ToArray()); Header(sheet.Range(1, 1, 1, headers.Length));
+        for (var index = 0; index < rooms.Count; index++)
         {
-            { "Indicador", "Cantidad", "Total", "%", null, null },
-            { "Pasajeros", passengers.Count, passengers.Count, passengers.Count == 0 ? 0 : 1m, null, null },
-            { "Habitaciones confirmadas", rooms.Count(x => x.Status == VerificationStatus.Confirmed), rooms.Count, rooms.Count == 0 ? 0 : rooms.Count(x => x.Status == VerificationStatus.Confirmed)/(decimal)rooms.Count, null, null },
-            { "Listos", states.Count(x => x.OverallStatus == PassengerOverallStatus.Ready), passengers.Count, passengers.Count == 0 ? 0 : states.Count(x => x.OverallStatus == PassengerOverallStatus.Ready)/(decimal)passengers.Count, null, null },
-            { "Pendientes", states.Count(x => x.OverallStatus == PassengerOverallStatus.Pending), passengers.Count, passengers.Count == 0 ? 0 : states.Count(x => x.OverallStatus == PassengerOverallStatus.Pending)/(decimal)passengers.Count, null, null },
-            { "Atención", states.Count(x => x.OverallStatus == PassengerOverallStatus.Attention), passengers.Count, passengers.Count == 0 ? 0 : states.Count(x => x.OverallStatus == PassengerOverallStatus.Attention)/(decimal)passengers.Count, null, null }
-        };
-        ws.Cell("A3").InsertData(values);
-        StyleHeader(ws.Range("A3:D3")); ws.Column(1).Width = 28; ws.Columns(2, 4).Width = 14;
-        ws.Range("D4:D8").Style.NumberFormat.Format = "0%";
-        ws.SheetView.FreezeRows(3); ws.RangeUsed()!.SetAutoFilter();
-    }
-
-    private static void BuildPassengers(IXLWorksheet ws, List<Passenger> passengers, DateOnly today)
-    {
-        var headers = new[] { "ID", "Operadora", "Código interno de grupo", "Pasajero", "Pasaporte", "Estado pasaporte", "Hotel / propiedad", "Tipo habitación", "Check-in", "Check-out", "Noches", "Habitación", "Ticket", "Maleta 23 kg", "Transfer", "Documentación", "Estado general", "Avance", "Pendientes", "Próxima acción", "Responsable", "Última actualización", "Observaciones" };
-        ws.Cell(1, 1).InsertData(new[] { headers });
-        var row = 2;
-        foreach (var p in passengers)
-        {
-            var s = BusinessRules.CalculatePassenger(p, today);
-            var req = s.Requirements.ToDictionary(x => x.Key);
-            var data = new object?[] { p.Id, p.PrimaryOperator?.Name, p.RoomReservation?.InternalCode, p.FullName,
-                PassengerQueryService.MaskPassport(p.PassportNumber), StatusLabel(s.PassportStatus), p.RoomReservation?.Hotel, p.RoomReservation?.RoomType,
-                p.RoomReservation?.CheckIn?.ToDateTime(TimeOnly.MinValue), p.RoomReservation?.CheckOut?.ToDateTime(TimeOnly.MinValue), p.RoomReservation?.Nights,
-                StatusLabel(req["room"].Status), StatusLabel(req["flight"].Status), StatusLabel(req["baggage"].Status), StatusLabel(req["transfer"].Status),
-                StatusLabel(req["documentation"].Status), StatusLabel(s.OverallStatus), s.ProgressPercent / 100m,
-                string.Join(", ", req.Values.Where(x => !BusinessRules.IsResolved(x)).Select(x => x.Label)), p.NextAction, p.InternalOwner,
-                p.UpdatedAt.DateTime, p.Notes };
-            ws.Cell(row++, 1).InsertData(new[] { data });
+            var room = rooms[index]; var row = index + 2; Row(sheet, row, room.InternalCode, room.Operator.Name, room.Status, room.Hotel, room.RoomType,
+                room.Passengers.Count, room.ExpectedCapacity, room.CheckIn, room.CheckOut, room.Nights, room.HotelReservationNumber, room.MealPlan, room.SourceReference, room.OperatorContact, room.Notes);
+            sheet.Range(row, 8, row, 9).Style.DateFormat.Format = "yyyy-mm-dd";
         }
-        StyleHeader(ws.Range(1, 1, 1, headers.Length));
-        ws.Range(1, 1, Math.Max(2, row - 1), headers.Length).CreateTable("PassengersExport");
-        ws.SheetView.FreezeRows(1); ws.RangeUsed()!.SetAutoFilter();
-        ws.Columns(1, headers.Length).AdjustToContents(1, Math.Min(row, 60));
-        foreach (var c in new[] { 5, 7, 19, 20, 23 }) ws.Column(c).Width = Math.Min(ws.Column(c).Width, 38);
-        ws.Columns(9, 10).Style.DateFormat.Format = "dd/MM/yyyy"; ws.Column(22).Style.DateFormat.Format = "dd/MM/yyyy HH:mm"; ws.Column(18).Style.NumberFormat.Format = "0%";
+        if (rooms.Count > 0) sheet.Range(1, 1, rooms.Count + 1, headers.Length).CreateTable("RoomControl"); sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
     }
 
-    private static void BuildRooms(IXLWorksheet ws, List<RoomReservation> rooms)
+    private static void BuildSources(IXLWorksheet sheet)
     {
-        var headers = new[] { "Código interno de grupo", "Operadora", "Estado", "Hotel / propiedad", "Tipo", "Check-in", "Check-out", "Noches", "Ocupantes", "Capacidad", "Fuente", "Reserva", "Contacto", "Alertas", "Observaciones" };
-        ws.Cell(1, 1).InsertData(new[] { headers }); var row = 2;
-        foreach (var r in rooms)
-        {
-            ws.Cell(row++, 1).InsertData(new[] { new object?[] { r.InternalCode, r.Operator.Name, StatusLabel(r.Status), r.Hotel, r.RoomType,
-                r.CheckIn?.ToDateTime(TimeOnly.MinValue), r.CheckOut?.ToDateTime(TimeOnly.MinValue), r.Nights, r.Passengers.Count, r.ExpectedCapacity,
-                r.SourceReference, r.HotelReservationNumber, r.OperatorContact, r.SpecificPropertyPending ? BusinessRules.TopTravelPropertyAlert : null, r.Notes } });
-        }
-        StyleHeader(ws.Range(1, 1, 1, headers.Length)); ws.Range(1, 1, Math.Max(2, row - 1), headers.Length).CreateTable("RoomsExport");
-        ws.SheetView.FreezeRows(1); ws.RangeUsed()!.SetAutoFilter(); ws.Columns(1, headers.Length).AdjustToContents(1, Math.Min(row, 40));
-        foreach (var column in new[] { 4, 11, 15 }) ws.Column(column).Width = 35;
-        ws.Columns(6, 7).Style.DateFormat.Format = "dd/MM/yyyy";
+        Title(sheet, "Fuentes y uso", 3); Row(sheet, 3, "Hoja", "Uso", "Importable"); Header(sheet.Range("A3:C3"));
+        Row(sheet, 4, "Control pasajeros", "Fuente autoritativa de pasajeros y estado operativo", "Sí");
+        Row(sheet, 5, "Habitaciones", "Fuente autoritativa de reservas y ocupación", "Sí");
+        Row(sheet, 6, "Dashboard", "Resumen calculado; nunca se importa", "No"); Row(sheet, 7, "Fuentes y uso", "Documentación informativa", "No");
+        sheet.Columns().AdjustToContents(12, 55);
     }
 
-    private static void BuildSources(IXLWorksheet ws)
-    {
-        ws.Cell("A1").Value = "FUENTES Y CRITERIOS"; ws.Range("A1:D1").Merge(); StyleHeader(ws.Range("A1:D1"));
-        ws.Cell("A3").InsertData(new[] { new[] { "Elemento", "Criterio" }, new[] { "Pasajeros", "Control pasajeros es la fuente autoritativa." },
-            new[] { "Habitaciones", "Habitaciones es la fuente autoritativa." }, new[] { "Dashboard", "Valores recalculados desde la base de datos; no se importan métricas." },
-            new[] { "Pasaportes", "Control preventivo interno. Verificar requisitos migratorios oficiales antes del viaje." } });
-        StyleHeader(ws.Range("A3:B3")); ws.Column(1).Width = 24; ws.Column(2).Width = 80; ws.Column(2).Style.Alignment.WrapText = true;
-    }
-
-    private static void StyleHeader(IXLRange range)
-    {
-        range.Style.Fill.BackgroundColor = Turquoise; range.Style.Font.SetBold().Font.SetFontColor(XLColor.White);
-        range.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-    }
-    private static string StatusLabel(Enum status) => status.ToString() switch
-    {
-        "Confirmed" => "Confirmado", "ToVerify" => "Por verificar", "InProgress" => "En gestión", "NotIncluded" => "No incluido", "NotApplicable" => "No aplica",
-        "Ready" => "Listo", "Pending" => "Pendiente", "Attention" => "Atención", "Incomplete" => "Incompleto", "Expired" => "Vencido", "ExpiringSoon" => "Por vencer", "Valid" => "Vigente", _ => status.ToString()
-    };
+    private static void Row(IXLWorksheet sheet, int row, params object?[] values)
+    { for (var index = 0; index < values.Length; index++) sheet.Cell(row, index + 1).Value = XLCellValue.FromObject(values[index]); }
+    private static void Title(IXLWorksheet sheet, string value, int columns) { sheet.Cell(1, 1).Value = value; sheet.Range(1, 1, 1, columns).Merge(); var range = sheet.Range(1, 1, 1, columns); range.Style.Fill.BackgroundColor = Navy; range.Style.Font.FontColor = XLColor.White; range.Style.Font.Bold = true; range.Style.Font.FontSize = 16; }
+    private static void Header(IXLRange range) { range.Style.Fill.BackgroundColor = Turquoise; range.Style.Font.FontColor = XLColor.White; range.Style.Font.Bold = true; }
+    private static string Status(PassengerComputedState state, string key) => state.Requirements.Single(x => x.Key == key).Status.ToString();
+    private static int Percent(int value, int total) => total == 0 ? 0 : (int)Math.Round(value * 100m / total);
     private static string Csv(string? value) => $"\"{(value ?? "").Replace("\"", "\"\"")}\"";
 }

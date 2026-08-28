@@ -1,36 +1,20 @@
 # Despliegue
 
-## Docker Compose
+`docker compose up --build -d` ejecuta una sola imagen no-root. El host publica solo `127.0.0.1:${PORT:-8080}`; un reverse proxy externo aporta dominio y TLS. Con HTTPS, configurar `COOKIE_SECURE=true`.
 
-`docker-compose.yml` crea PostgreSQL, API y web/proxy. Los datos viven en volúmenes nombrados. La API corre como usuario no root, con filesystem read-only y `/tmp` temporal; Caddy termina TLS y publica puertos 80/443.
+El volumen `travel-control-data` contiene SQLite, adjuntos y claves de Data Protection. El bind `data/private` es solo lectura. La migración se aplica antes de servir tráfico y `/health/ready` comprueba conexión.
 
-```sh
-cp .env.example .env
-# editar .env
-docker compose up --build -d
-docker compose ps
-docker compose logs -f api
-```
+Antes de actualizar, crear un snapshot o backup consistente del volumen. Para restaurar, detener el contenedor, recuperar el volumen completo y volver a iniciar la misma imagen. No restaurar solo SQLite si cambió el conjunto de adjuntos.
 
-La API espera a PostgreSQL saludable; web espera a API saludable. La migración se ejecuta al inicio antes de aceptar tráfico.
+CI compila, prueba, construye el contenedor y ejecuta Playwright real. En `main` publica SHA/latest en GHCR. El job de despliegue requiere un runner propio con etiqueta `travel-control`; ese runner conserva el volumen y ejecuta Compose con la imagen SHA.
 
-## Producción
+## Cloudflare Tunnel
 
-1. Cambiar `https://localhost` por un dominio real en `infra/Caddyfile` y `ALLOWED_ORIGIN`.
-2. Permitir que Caddy obtenga ACME o montar certificados administrados.
-3. Usar secretos externos; no hornear `.env` en imágenes.
-4. Limitar acceso al host, no publicar PostgreSQL y habilitar firewall.
-5. Configurar backup de `postgres-data` y `attachment-data` con la misma ventana de consistencia.
-6. Enviar logs a un destino con acceso restringido y política de retención.
-7. Supervisar `/health/ready`, espacio de volúmenes, vencimiento TLS y fallos de login.
+1. Crear un Tunnel en Cloudflare Zero Trust y asignarle un hostname HTTPS.
+2. Instalar `cloudflared` en el host del runner, fuera del contenedor.
+3. Apuntar el servicio del túnel a `http://127.0.0.1:8080`; Compose no expone la aplicación a la red pública.
+4. Configurar `COOKIE_SECURE=true`, Access/SSO si corresponde y conservar la validación de origen/host en Cloudflare.
+5. Ejecutar el túnel como servicio con el token guardado en el almacén seguro del host, nunca en Git.
+6. Comprobar desde el hostname `/health/ready`, login, cookies Secure y encabezado `X-Forwarded-Proto: https`.
 
-## Actualización
-
-```sh
-docker compose build --pull
-docker compose up -d
-docker compose ps
-```
-
-Respaldar antes de migraciones. Si una actualización falla, conservar imagen anterior y restaurar base/volumen como conjunto; no revertir solo la base después de que documentos o referencias hayan cambiado.
-
+Prueba efímera: `cloudflared tunnel --url http://127.0.0.1:8080`. Producción debe usar un túnel nombrado y administrado.

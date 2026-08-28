@@ -6,8 +6,13 @@ data/private/
 **/dist/
 **/coverage/
 **/playwright-report/
+**/test-results/
 **/.cache/
 attachments/
+.dev/
+*.db
+*.db-shm
+*.db-wal
 *.user
 *.suo
 .vs/

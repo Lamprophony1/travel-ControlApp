@@ -1,0 +1,76 @@
+name: CI-CD
+on:
+  push:
+    branches: ['**']
+  pull_request:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: travel-control-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with: { dotnet-version: '10.0.x' }
+      - run: dotnet restore TravelControl.slnx
+      - run: dotnet build TravelControl.slnx -c Release --no-restore
+      - run: dotnet test TravelControl.slnx -c Release --no-build
+  frontend:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+  container-e2e:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: docker build -t travel-control:test .
+      - run: docker run -d --name travel-control -p 127.0.0.1:8080:8080 -e Security__CookieSecure=false travel-control:test
+      - run: for i in {1..30}; do curl -fsS http://127.0.0.1:8080/health/ready && exit 0; sleep 2; done; docker logs travel-control; exit 1
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run e2e
+        working-directory: web
+        env: { E2E_BASE_URL: 'http://127.0.0.1:8080' }
+      - if: always()
+        run: docker logs travel-control
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [container-e2e]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/lamprophony1/travel-controlapp:${{ github.sha }}
+            ghcr.io/lamprophony1/travel-controlapp:latest
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, travel-control]
+    needs: [publish]
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+      - run: TRAVEL_CONTROL_IMAGE=ghcr.io/lamprophony1/travel-controlapp:${{ github.sha }} docker compose pull
+      - run: TRAVEL_CONTROL_IMAGE=ghcr.io/lamprophony1/travel-controlapp:${{ github.sha }} COOKIE_SECURE=true docker compose up -d --no-build --remove-orphans

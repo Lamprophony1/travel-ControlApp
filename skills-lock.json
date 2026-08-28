@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "clean": {
+      "source": "bergside/awesome-design-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clean/SKILL.md",
+      "computedHash": "59a1f05e704cfb6c9f499cb5bbd91cbba0968d19552abedd603cae68711cd94e"
+    },
+    "typeui-fundamentals": {
+      "source": "bergside/typeui",
+      "sourceType": "github",
+      "skillPath": "skills/fundamentals/SKILL.md",
+      "computedHash": "37d3df14b03932ef4a3950332acbc6104d93a17595dbdebe63b5c16c4cc67a43"
+    }
+  }
+}

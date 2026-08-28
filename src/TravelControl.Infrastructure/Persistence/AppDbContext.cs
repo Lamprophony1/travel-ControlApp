@@ -1,13 +1,16 @@
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
-using TravelControl.Api.Domain;
+using TravelControl.Domain;
+using TravelControl.Infrastructure.Identity;
 
-namespace TravelControl.Api.Data;
+namespace TravelControl.Infrastructure.Persistence;
 
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
-    : IdentityDbContext<AppUser, Microsoft.AspNetCore.Identity.IdentityRole<Guid>, Guid>(options)
+    : IdentityDbContext<AppUser, IdentityRole<Guid>, Guid>(options)
 {
     public DbSet<Trip> Trips => Set<Trip>();
+    public DbSet<TripTransferStatus> TripTransferStatuses => Set<TripTransferStatus>();
     public DbSet<Operator> Operators => Set<Operator>();
     public DbSet<Passenger> Passengers => Set<Passenger>();
     public DbSet<RoomReservation> RoomReservations => Set<RoomReservation>();
@@ -15,50 +18,81 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<FlightSegment> FlightSegments => Set<FlightSegment>();
     public DbSet<PassengerFlight> PassengerFlights => Set<PassengerFlight>();
     public DbSet<BaggageEntitlement> BaggageEntitlements => Set<BaggageEntitlement>();
-    public DbSet<TransferBooking> TransferBookings => Set<TransferBooking>();
-    public DbSet<PassengerTransfer> PassengerTransfers => Set<PassengerTransfer>();
     public DbSet<Attachment> Attachments => Set<Attachment>();
     public DbSet<FollowUp> FollowUps => Set<FollowUp>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<ImportRun> ImportRuns => Set<ImportRun>();
 
-    protected override void OnModelCreating(ModelBuilder b)
+    protected override void OnModelCreating(ModelBuilder builder)
     {
-        base.OnModelCreating(b);
-        b.HasPostgresEnum<VerificationStatus>();
-        b.Entity<Trip>().HasIndex(x => x.Name).IsUnique();
-        b.Entity<Operator>().HasIndex(x => x.Name).IsUnique();
-        b.Entity<Passenger>().HasIndex(x => new { x.TripId, x.NormalizedName }).IsUnique();
-        b.Entity<Passenger>().HasIndex(x => new { x.TripId, x.NormalizedPassportNumber }).IsUnique()
-            .HasFilter("\"NormalizedPassportNumber\" IS NOT NULL");
-        b.Entity<RoomReservation>().HasIndex(x => new { x.TripId, x.InternalCode }).IsUnique();
-        b.Entity<PassengerFlight>().HasKey(x => new { x.PassengerId, x.FlightBookingId });
-        b.Entity<PassengerTransfer>().HasKey(x => new { x.PassengerId, x.TransferBookingId });
-        b.Entity<Attachment>().HasIndex(x => x.Sha256);
-        b.Entity<ImportRun>().HasIndex(x => new { x.Sha256, x.DryRun });
-
-        foreach (var type in b.Model.GetEntityTypes().Where(x => typeof(Entity).IsAssignableFrom(x.ClrType)))
+        base.OnModelCreating(builder);
+        builder.Entity<AppUser>(entity =>
         {
-            b.Entity(type.ClrType).Property(nameof(Entity.Version)).IsRowVersion();
-        }
-
-        b.Entity<Passenger>().HasOne(x => x.RoomReservation).WithMany(x => x.Passengers)
-            .HasForeignKey(x => x.RoomReservationId).OnDelete(DeleteBehavior.SetNull);
-        b.Entity<Passenger>().HasOne(x => x.PrimaryOperator).WithMany()
-            .HasForeignKey(x => x.PrimaryOperatorId).OnDelete(DeleteBehavior.SetNull);
-        b.Entity<FollowUp>().HasOne(x => x.Passenger).WithMany(x => x.FollowUps)
+            entity.Property(x => x.DisplayName).HasMaxLength(160);
+        });
+        builder.Entity<Trip>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(160);
+            entity.Property(x => x.Destination).HasMaxLength(160);
+            entity.Property(x => x.TimeZone).HasMaxLength(80);
+            entity.HasIndex(x => x.Name).IsUnique();
+            entity.HasOne(x => x.TransferStatus).WithOne(x => x.Trip)
+                .HasForeignKey<TripTransferStatus>(x => x.TripId).OnDelete(DeleteBehavior.Cascade);
+        });
+        builder.Entity<TripTransferStatus>().HasIndex(x => x.TripId).IsUnique();
+        builder.Entity<Operator>(entity =>
+        {
+            entity.Property(x => x.Name).HasMaxLength(120);
+            entity.HasIndex(x => x.Name).IsUnique();
+        });
+        builder.Entity<Passenger>(entity =>
+        {
+            entity.Property(x => x.FullName).HasMaxLength(220);
+            entity.Property(x => x.NormalizedName).HasMaxLength(220);
+            entity.Property(x => x.PassportNumber).HasMaxLength(40);
+            entity.Property(x => x.NormalizedPassportNumber).HasMaxLength(40);
+            entity.HasIndex(x => new { x.TripId, x.NormalizedName }).IsUnique();
+            entity.HasIndex(x => new { x.TripId, x.NormalizedPassportNumber }).IsUnique()
+                .HasFilter("NormalizedPassportNumber IS NOT NULL");
+            entity.HasOne(x => x.RoomReservation).WithMany(x => x.Passengers)
+                .HasForeignKey(x => x.RoomReservationId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(x => x.PrimaryOperator).WithMany()
+                .HasForeignKey(x => x.PrimaryOperatorId).OnDelete(DeleteBehavior.SetNull);
+        });
+        builder.Entity<RoomReservation>(entity =>
+        {
+            entity.Property(x => x.InternalCode).HasMaxLength(60);
+            entity.HasIndex(x => new { x.TripId, x.InternalCode }).IsUnique();
+        });
+        builder.Entity<FlightBooking>().HasIndex(x => new { x.TripId, x.Pnr });
+        builder.Entity<PassengerFlight>().HasKey(x => new { x.PassengerId, x.FlightBookingId });
+        builder.Entity<BaggageEntitlement>().Ignore(x => x.Includes23Kg);
+        builder.Entity<Attachment>().HasIndex(x => x.Sha256);
+        builder.Entity<ImportRun>().HasIndex(x => new { x.Sha256, x.DryRun });
+        builder.Entity<FollowUp>().HasOne(x => x.Passenger).WithMany(x => x.FollowUps)
             .HasForeignKey(x => x.PassengerId).OnDelete(DeleteBehavior.Cascade);
+
+        foreach (var entityType in builder.Model.GetEntityTypes().Where(x => typeof(Entity).IsAssignableFrom(x.ClrType)))
+            builder.Entity(entityType.ClrType).Property(nameof(Entity.Version)).IsConcurrencyToken();
     }
 
-    public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         var now = DateTimeOffset.UtcNow;
         foreach (var entry in ChangeTracker.Entries<Entity>())
         {
-            if (entry.State == EntityState.Added) entry.Entity.CreatedAt = now;
-            if (entry.State is EntityState.Added or EntityState.Modified) entry.Entity.UpdatedAt = now;
+            if (entry.State == EntityState.Added)
+            {
+                entry.Entity.CreatedAt = now;
+                entry.Entity.Version = Math.Max(1, entry.Entity.Version);
+            }
+            if (entry.State is EntityState.Added or EntityState.Modified)
+            {
+                entry.Entity.UpdatedAt = now;
+                if (entry.State == EntityState.Modified)
+                    entry.Entity.Version = entry.OriginalValues.GetValue<long>(nameof(Entity.Version)) + 1;
+            }
         }
-        return await base.SaveChangesAsync(cancellationToken);
+        return base.SaveChangesAsync(cancellationToken);
     }
 }
-

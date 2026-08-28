@@ -1419,4 +1419,3 @@ Apply this priority when two rules pull against each other:
 When two equally-weighted rules conflict, prefer the option that costs the user less effort.
 
 ---
-

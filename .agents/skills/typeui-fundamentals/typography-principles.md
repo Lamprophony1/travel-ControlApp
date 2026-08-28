@@ -707,4 +707,3 @@ When typography rules pull against each other, resolve in this order:
 6. **Aesthetic preference** — last; "I like how it looks" is not a reason to ship.
 
 ---
-

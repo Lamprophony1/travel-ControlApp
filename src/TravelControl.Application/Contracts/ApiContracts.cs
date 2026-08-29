@@ -38,8 +38,10 @@ public sealed record AdminPasswordResetRequest(string NewPassword);
 public sealed record RoomUpdateRequest(string InternalCode, Guid OperatorId, VerificationStatus Status, string? Hotel, string? RoomType,
     int ExpectedCapacity, bool CapacityOverride, string? CapacityOverrideReason, DateOnly? CheckIn, DateOnly? CheckOut,
     string? HotelReservationNumber, string? MealPlan, string? SourceReference, string? OperatorContact, string? Notes, long Version);
+public sealed record RoomOccupantsRequest(IReadOnlyList<Guid> PassengerIds, long Version);
 public sealed record FlightBookingRequest(VerificationStatus Status, string? Airline, string? IssuingAgency, string? Pnr,
-    string? GeneralReference, string? SourceReference, string? Notes, IReadOnlyList<FlightSegmentRequest> Segments, IReadOnlyList<Guid> PassengerIds);
+    string? GeneralReference, string? SourceReference, string? Notes, IReadOnlyList<FlightSegmentRequest> Segments,
+    IReadOnlyList<Guid> PassengerIds, long Version = 0, IReadOnlyList<Guid>? ConfirmedPassengerRemovalIds = null);
 public sealed record FlightSegmentRequest(Guid? Id, SegmentType Type, string? FlightNumber, string? OriginAirport, string? DestinationAirport,
     DateTimeOffset? DepartureAt, DateTimeOffset? ArrivalAt, string? OriginTimeZone, string? DestinationTimeZone, int Sequence);
 public sealed record PassengerTicketRequest(string ElectronicTicketNumber, VerificationStatus Status, string? Notes);
@@ -48,4 +50,4 @@ public sealed record BaggageUpdateRequest(Guid PassengerId, Guid? FlightBookingI
 public sealed record GroupBaggageRequest(Guid FlightBookingId, IReadOnlyList<Guid>? PassengerIds, string? SourceReference, string? Notes);
 public sealed record TripTransferStatusRequest(bool IsConfirmed, string? Notes, long Version);
 public sealed record FollowUpRequest(Guid? TripId, Guid? PassengerId, Guid? RoomReservationId, string Title, string? Description,
-    DateOnly? DueDate, FollowUpStatus Status, FollowUpPriority Priority);
+    DateOnly? DueDate, FollowUpStatus Status, FollowUpPriority Priority, long Version = 0);

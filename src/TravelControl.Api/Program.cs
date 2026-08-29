@@ -1,6 +1,7 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
@@ -67,13 +68,22 @@ builder.Services.AddAntiforgery(options =>
     options.Cookie.SecurePolicy = secureCookies ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest;
     options.Cookie.SameSite = SameSiteMode.Strict;
 });
-builder.Services.AddRateLimiter(options => options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
-    context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
-    { PermitLimit = 8, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 })));
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+        { PermitLimit = 8, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+    options.AddPolicy("public-read", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+        { PermitLimit = 120, Window = TimeSpan.FromMinutes(5), QueueLimit = 0, AutoReplenishment = true }));
+});
+builder.Services.Configure<PublicReadOptions>(builder.Configuration.GetSection("PublicRead"));
 builder.Services.AddScoped<ExcelImportService>();
 builder.Services.AddScoped<ExcelExportService>();
 builder.Services.AddScoped<PassengerQueryService>();
 builder.Services.AddScoped<DashboardService>();
+builder.Services.AddScoped<PublicReadService>();
 builder.Services.AddScoped<AttachmentStorage>();
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 10 * 1024 * 1024);
@@ -83,7 +93,13 @@ var forwarded = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeader
 forwarded.KnownIPNetworks.Clear();
 forwarded.KnownProxies.Clear();
 app.UseForwardedHeaders(forwarded);
-app.UseExceptionHandler();
+if (app.Environment.IsEnvironment("Testing"))
+    app.UseExceptionHandler(error => error.Run(async context =>
+    {
+        var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+        await Results.Problem(exception?.ToString()).ExecuteAsync(context);
+    }));
+else app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseRateLimiter();
 app.Use(async (ctx, next) =>
@@ -93,7 +109,12 @@ app.Use(async (ctx, next) =>
     ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
     ctx.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
     ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
-    if (ctx.Request.Path.StartsWithSegments("/api")) ctx.Response.Headers["Cache-Control"] = "no-store";
+    ctx.Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive";
+    if (ctx.Request.Path.StartsWithSegments("/api"))
+    {
+        ctx.Response.Headers["Cache-Control"] = "no-store";
+        ctx.Response.Headers["Pragma"] = "no-cache";
+    }
     await next();
 });
 app.UseAuthentication();
@@ -110,6 +131,7 @@ if (app.Environment.IsDevelopment()) { app.MapOpenApi(); app.UseSwagger(); app.U
 app.MapGet("/health/live", () => Results.Ok(new { status = "ok" }));
 app.MapGet("/health/ready", async (AppDbContext db, CancellationToken ct) =>
     await db.Database.CanConnectAsync(ct) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
+app.MapGet("/robots.txt", () => Results.Text("User-agent: *\nDisallow: /\n", "text/plain"));
 app.MapTravelControlApi();
 app.UseDefaultFiles();
 app.UseStaticFiles();

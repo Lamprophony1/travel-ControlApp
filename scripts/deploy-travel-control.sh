@@ -66,6 +66,13 @@ if ! curl --fail --silent --show-error --retry 5 --retry-delay 2 \
   exit 1
 fi
 
+if ! "${APP_ROOT}/scripts/smoke-public-read.sh" "https://${APP_HOSTNAME}"; then
+  echo "Public read-only or privacy smoke test failed for ${APP_HOSTNAME}." >&2
+  sanitized_logs
+  rollback || true
+  exit 1
+fi
+
 container_health="$(docker inspect --format '{{.State.Health.Status}}' "${CONTAINER_NAME}")"
 [[ "${container_health}" == "healthy" ]] || { echo "Container is not healthy" >&2; exit 1; }
 echo "Travel Control ${TRAVELCONTROL_IMAGE} is healthy locally and through https://${APP_HOSTNAME}."

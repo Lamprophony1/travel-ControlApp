@@ -308,9 +308,7 @@ public sealed class ExcelImportService(AppDbContext db, ILogger<ExcelImportServi
         entity.ExpectedCapacity = row.Capacity; entity.CheckIn = row.CheckIn; entity.CheckOut = row.CheckOut; entity.Hotel = row.Hotel;
         entity.HotelReservationNumber = row.ReservationNumber; entity.MealPlan = row.MealPlan; entity.SourceReference = row.Source;
         entity.OperatorContact = row.Contact; entity.Notes = row.Notes;
-        var hotel = TextNormalizer.Normalize(row.Hotel); var notes = TextNormalizer.Normalize(row.Notes);
-        entity.SpecificPropertyPending = TextNormalizer.Normalize(op.Name) == "TOP TRAVEL"
-            && (string.IsNullOrWhiteSpace(row.Hotel) || hotel.Contains("PROPIEDAD EXACTA") || notes.Contains("PROPIEDAD EXACTA"));
+        entity.SpecificPropertyPending = BusinessRules.IsSpecificPropertyPending(op.Name, row.Hotel);
     }
     private static string? MergeNotes(string? current, string? extra) => string.IsNullOrWhiteSpace(extra) ? current
         : string.IsNullOrWhiteSpace(current) ? extra : current.Contains(extra, StringComparison.OrdinalIgnoreCase) ? current : $"{current}\n{extra}";

@@ -12,15 +12,19 @@ public sealed class DashboardService(AppDbContext db, PassengerQueryService pass
 {
     public async Task<DashboardResponse> GetAsync(string? operatorName, string? overall, CancellationToken ct)
     {
-        var query = passengers.BaseQuery();
+        var query = passengers.BaseQuery(asNoTracking: true);
         if (!string.IsNullOrWhiteSpace(operatorName)) query = query.Where(x => x.PrimaryOperator != null && x.PrimaryOperator.Name == operatorName);
         var entities = await query.ToListAsync(ct);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var states = entities.Select(x => (Passenger: x, State: BusinessRules.CalculatePassenger(x, today))).ToList();
+        var passengerIds = entities.Select(x => x.Id).ToArray();
+        var evidence = (await db.Attachments.AsNoTracking()
+            .Where(x => x.PassengerId.HasValue && passengerIds.Contains(x.PassengerId.Value) && x.DocumentType == DocumentType.AirTicket)
+            .Select(x => x.PassengerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
+        var states = entities.Select(x => (Passenger: x, State: BusinessRules.CalculatePassenger(x, today, evidence.Contains(x.Id)))).ToList();
         if (Enum.TryParse<PassengerOverallStatus>(overall, true, out var filterStatus)) states = states.Where(x => x.State.OverallStatus == filterStatus).ToList();
         var total = states.Count;
         var rooms = states.Select(x => x.Passenger.RoomReservation).Where(x => x is not null).DistinctBy(x => x!.Id).ToList();
-        int CountRequirement(string key) => states.Count(x => x.State.Requirements.Single(r => r.Key == key).Status == VerificationStatus.Confirmed);
+        int CountRequirement(string key) => states.Count(x => BusinessRules.IsResolved(x.State.Requirements.Single(r => r.Key == key)));
         int Percent(int value) => total == 0 ? 0 : (int)Math.Round(value * 100m / total);
         DashboardKpi Kpi(string key, string label, int value, string filter) => new(key, label, value, total, Percent(value), filter);
 
@@ -32,12 +36,12 @@ public sealed class DashboardService(AppDbContext db, PassengerQueryService pass
             Kpi("ready", "Pasajeros listos", ready, "overall=Ready"),
             Kpi("pending", "Pasajeros pendientes", pending, "overall=Pending"),
             Kpi("attention", "Pasajeros en atención", attention, "overall=Attention"),
-            Kpi("roomsConfirmed", "Habitaciones confirmadas", CountRequirement("room"), "requirement=room&status=Confirmed"),
-            Kpi("flights", "Tickets confirmados", CountRequirement("flight"), "requirement=flight&status=Confirmed"),
-            Kpi("baggage", "Maletas confirmadas", CountRequirement("baggage"), "requirement=baggage&status=Confirmed"),
-            Kpi("documentation", "Documentaciones verificadas", CountRequirement("documentation"), "requirement=documentation&status=Confirmed"),
-            Kpi("passports", "Pasaportes completos", CountRequirement("passport"), "requirement=passport&status=Confirmed"),
-            new("rooms", "Habitaciones", rooms.Count, rooms.Count, rooms.Count == 0 ? 0 : 100, "/rooms")
+            Kpi("roomsConfirmed", "Habitaciones resueltas", CountRequirement("room"), "requirement=room"),
+            Kpi("flights", "Tickets resueltos", CountRequirement("flight"), "requirement=flight"),
+            Kpi("baggage", "Maletas resueltas", CountRequirement("baggage"), "requirement=baggage"),
+            Kpi("documentation", "Documentaciones resueltas", CountRequirement("documentation"), "requirement=documentation"),
+            Kpi("passports", "Pasaportes completos", CountRequirement("passport"), "requirement=passport"),
+            new("rooms", "Habitaciones", rooms.Count, rooms.Count, rooms.Count == 0 ? 0 : 100, "/gestion/habitaciones")
         };
 
         var labels = new Dictionary<string, string> { ["passport"]="Pasaporte", ["documentation"]="Documentación", ["room"]="Habitación", ["flight"]="Ticket de vuelo", ["baggage"]="Maleta de 23 kg" };
@@ -52,7 +56,7 @@ public sealed class DashboardService(AppDbContext db, PassengerQueryService pass
         var operatorSummary = states.GroupBy(x => x.Passenger.PrimaryOperator?.Name ?? "Sin operadora").Select(group =>
         {
             var operatorRooms = group.Select(x => x.Passenger.RoomReservation).Where(x => x is not null).DistinctBy(x => x!.Id).ToList();
-            return new OperatorSummary(group.Key, operatorRooms.Count, group.Count(), operatorRooms.Count(x => x!.Status == VerificationStatus.Confirmed),
+            return new OperatorSummary(group.Key, operatorRooms.Count, group.Count(), group.Count(x => BusinessRules.IsResolved(x.State.Requirements.Single(r => r.Key == "room"))),
                 group.SelectMany(x => x.State.Alerts).Distinct().ToList());
         }).OrderBy(x => x.Name).ToList();
 
@@ -63,7 +67,7 @@ public sealed class DashboardService(AppDbContext db, PassengerQueryService pass
         var actions = new List<PriorityAction>
         {
             new("critical", "Pasajeros con alertas críticas", attention, "overall=Attention"),
-            new("global", "Transfer grupal pendiente", transfer.IsConfirmed ? 0 : 1, "globalTransfer=pending"),
+            new("critical", "Transfer grupal pendiente", transfer.IsConfirmed ? 0 : 1, "globalTransfer=pending"),
             new("warning", "Tickets de vuelo pendientes", total - CountRequirement("flight"), "requirement=flight"),
             new("warning", "Maletas de 23 kg pendientes", total - CountRequirement("baggage"), "requirement=baggage"),
             new("info", "Documentaciones pendientes", total - CountRequirement("documentation"), "requirement=documentation"),

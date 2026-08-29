@@ -1,4 +1,5 @@
 let csrfToken: string | undefined
+export function resetCsrfToken() { csrfToken = undefined }
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) { super(message) }
@@ -30,4 +31,3 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 
 export const postJson = <T>(path: string, body: unknown) => api<T>(path, { method: 'POST', body: JSON.stringify(body) })
 export const putJson = <T>(path: string, body: unknown) => api<T>(path, { method: 'PUT', body: JSON.stringify(body) })
-

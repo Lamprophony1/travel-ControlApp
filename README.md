@@ -1,6 +1,8 @@
 # Control de Viaje
 
-Aplicación privada, mobile-first y PWA para administrar pasajeros, pasaportes, documentación, habitaciones, vuelos, tickets, equipaje de 23 kg, seguimiento y un único estado global de transfer.
+Aplicación mobile-first y PWA con consulta pública sanitizada y gestión privada por roles para pasajeros, documentación, habitaciones, vuelos, tickets, equipaje de 23 kg, seguimiento y un único estado global de transfer.
+
+La consulta sin login vive en `/`, `/pasajeros` y `/pasajeros/:id`. La gestión autenticada vive bajo `/gestion`; nunca se vuelven anónimos los endpoints privados existentes. Véase [acceso público](docs/PUBLIC_READ_ACCESS.md).
 
 ## Stack y arquitectura
 
@@ -63,7 +65,7 @@ npm run build
 npm run e2e
 ```
 
-Playwright usa `E2E_BASE_URL` y prueba Chromium en desktop y Pixel 7. La prueba privada completa solo corre si se entrega `E2E_WORKBOOK_PATH` desde un almacén seguro.
+Playwright usa `E2E_BASE_URL` y prueba Chromium en 360×800, 390×844, 430×932, 768×1024 y 1440×900. Los fixtures de CI son exclusivamente ficticios.
 
 ## Operación
 
@@ -73,4 +75,4 @@ Playwright usa `E2E_BASE_URL` y prueba Chromium en desktop y Pixel 7. La prueba 
 - Exportaciones: XLSX de control, XLSX de pendientes, CSV enmascarado y JSON administrativo.
 - Migraciones: `dotnet ef migrations add Nombre --project src/TravelControl.Infrastructure --startup-project src/TravelControl.Api --output-dir Persistence/Migrations`.
 
-Más detalle: [arquitectura](docs/ARCHITECTURE.md), [comparación de infraestructura](docs/INFRASTRUCTURE_COMPARISON.md), [modelo](docs/DATA_MODEL.md), [reglas](docs/BUSINESS_RULES.md), [importación](docs/IMPORT_EXPORT.md), [seguridad](docs/SECURITY.md), [despliegue](docs/DEPLOYMENT.md) y [decisiones](docs/DECISIONS.md).
+Más detalle: [arquitectura](docs/ARCHITECTURE.md), [acceso público](docs/PUBLIC_READ_ACCESS.md), [auditoría responsive](docs/RESPONSIVE_AUDIT.md), [modelo](docs/DATA_MODEL.md), [reglas](docs/BUSINESS_RULES.md), [importación](docs/IMPORT_EXPORT.md), [seguridad](docs/SECURITY.md), [despliegue](docs/DEPLOYMENT.md) y [decisiones](docs/DECISIONS.md).

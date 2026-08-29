@@ -39,14 +39,14 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
     public async Task<byte[]> ExportPassengersCsvAsync(CancellationToken ct)
     {
         var people = await passengerQueries.BaseQuery().OrderBy(x => x.FullName).ToListAsync(ct);
-        var lines = new List<string> { "Nombre,Pasaporte,Operadora,Código interno de grupo,Estado general,Avance,Próxima acción,Fecha próxima acción" };
+        var lines = new List<string> { "Nombre,Pasaporte enmascarado,Operadora,Código interno de grupo,Estado general,Avance,Próxima acción,Fecha próxima acción" };
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         foreach (var passenger in people)
         {
             var state = BusinessRules.CalculatePassenger(passenger, today);
             lines.Add(string.Join(',', new[] { passenger.FullName, PassengerQueryService.MaskPassport(passenger.PassportNumber), passenger.PrimaryOperator?.Name,
-                passenger.RoomReservation?.InternalCode, state.OverallStatus.ToString(), state.ProgressPercent.ToString(), passenger.NextAction,
-                passenger.NextActionDueDate?.ToString("yyyy-MM-dd") }.Select(Csv)));
+                passenger.RoomReservation?.InternalCode, OverallLabel(state.OverallStatus), state.ProgressPercent.ToString(), passenger.NextAction,
+                passenger.NextActionDueDate?.ToString("dd/MM/yyyy") }.Select(Csv)));
         }
         return Encoding.UTF8.GetBytes(string.Join("\r\n", lines));
     }
@@ -62,7 +62,7 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         foreach (var passenger in people)
             foreach (var requirement in BusinessRules.CalculatePassenger(passenger, today).Requirements.Where(x => !BusinessRules.IsResolved(x)))
-                Row(sheet, row++, "Pasajero", passenger.FullName, requirement.Label, requirement.Status, passenger.NextAction);
+                Row(sheet, row++, "Pasajero", passenger.FullName, requirement.Label, VerificationLabel(requirement.Status), passenger.NextAction);
         sheet.Columns().AdjustToContents(12, 42); using var stream = new MemoryStream(); workbook.SaveAs(stream); return stream.ToArray();
     }
 
@@ -73,7 +73,9 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
         var trip = BusinessRules.CalculateTrip(states, transfer.IsConfirmed); var ready = states.Count(x => x.OverallStatus == PassengerOverallStatus.Ready);
         Row(sheet, 4, "Pasajeros", passengers.Count, passengers.Count, passengers.Count == 0 ? 0 : 100);
         Row(sheet, 5, "Pasajeros listos", ready, passengers.Count, Percent(ready, passengers.Count));
-        Row(sheet, 6, "Habitaciones confirmadas", rooms.Count(x => x.Status == VerificationStatus.Confirmed), rooms.Count, Percent(rooms.Count(x => x.Status == VerificationStatus.Confirmed), rooms.Count));
+        var resolvedRooms = rooms.Count(x => x.Status == VerificationStatus.Confirmed && BusinessRules.RoomCanBeConfirmed(x, out _)
+            || x.Status == VerificationStatus.NotApplicable && !string.IsNullOrWhiteSpace(x.Notes));
+        Row(sheet, 6, "Habitaciones resueltas", resolvedRooms, rooms.Count, Percent(resolvedRooms, rooms.Count));
         Row(sheet, 7, "Progreso global", trip.ProgressPercent, 100, trip.ProgressPercent);
         Row(sheet, 8, "Transfer grupal", transfer.IsConfirmed ? "Confirmado" : "Pendiente", "Único", transfer.IsConfirmed ? 100 : 0);
         sheet.Columns().AdjustToContents(12, 38); sheet.SheetView.FreezeRows(3);
@@ -81,14 +83,14 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
 
     private static void BuildPassengers(IXLWorksheet sheet, IReadOnlyList<Passenger> passengers)
     {
-        var headers = new[] { "Pasajero", "Pasaporte", "Operadora", "Habitación / grupo", "Pasaporte", "Documentación", "Habitación", "Vuelo", "Maleta 23 kg", "Avance", "Próxima acción", "Fecha próxima acción", "Observaciones" };
+        var headers = new[] { "Pasajero", "Estado pasaporte", "Operadora", "Habitación / grupo", "Pasaporte enmascarado", "Documentación", "Habitación", "Vuelo", "Maleta 23 kg", "Avance", "Próxima acción", "Fecha próxima acción", "Observaciones" };
         Row(sheet, 1, headers.Cast<object?>().ToArray()); Header(sheet.Range(1, 1, 1, headers.Length)); var today = DateOnly.FromDateTime(DateTime.UtcNow);
         for (var index = 0; index < passengers.Count; index++)
         {
             var p = passengers[index]; var state = BusinessRules.CalculatePassenger(p, today); var row = index + 2;
-            Row(sheet, row, p.FullName, PassengerQueryService.MaskPassport(p.PassportNumber), p.PrimaryOperator?.Name, p.RoomReservation?.InternalCode,
-                Status(state, "passport"), Status(state, "documentation"), Status(state, "room"), Status(state, "flight"), Status(state, "baggage"),
-                state.ProgressPercent, p.NextAction, p.NextActionDueDate, p.Notes); sheet.Cell(row, 12).Style.DateFormat.Format = "yyyy-mm-dd";
+            Row(sheet, row, p.FullName, Status(state, "passport"), p.PrimaryOperator?.Name, p.RoomReservation?.InternalCode,
+                PassengerQueryService.MaskPassport(p.PassportNumber), Status(state, "documentation"), Status(state, "room"), Status(state, "flight"), Status(state, "baggage"),
+                state.ProgressPercent, p.NextAction, p.NextActionDueDate, p.Notes); sheet.Cell(row, 12).Style.DateFormat.Format = "dd/mm/yyyy";
         }
         if (passengers.Count > 0) sheet.Range(1, 1, passengers.Count + 1, headers.Length).CreateTable("PassengerControl");
         sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
@@ -100,9 +102,9 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
         Row(sheet, 1, headers.Cast<object?>().ToArray()); Header(sheet.Range(1, 1, 1, headers.Length));
         for (var index = 0; index < rooms.Count; index++)
         {
-            var room = rooms[index]; var row = index + 2; Row(sheet, row, room.InternalCode, room.Operator.Name, room.Status, room.Hotel, room.RoomType,
+            var room = rooms[index]; var row = index + 2; Row(sheet, row, room.InternalCode, room.Operator.Name, VerificationLabel(room.Status), room.Hotel, room.RoomType,
                 room.Passengers.Count, room.ExpectedCapacity, room.CheckIn, room.CheckOut, room.Nights, room.HotelReservationNumber, room.MealPlan, room.SourceReference, room.OperatorContact, room.Notes);
-            sheet.Range(row, 8, row, 9).Style.DateFormat.Format = "yyyy-mm-dd";
+            sheet.Range(row, 8, row, 9).Style.DateFormat.Format = "dd/mm/yyyy";
         }
         if (rooms.Count > 0) sheet.Range(1, 1, rooms.Count + 1, headers.Length).CreateTable("RoomControl"); sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
     }
@@ -120,7 +122,23 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
     { for (var index = 0; index < values.Length; index++) sheet.Cell(row, index + 1).Value = XLCellValue.FromObject(values[index]); }
     private static void Title(IXLWorksheet sheet, string value, int columns) { sheet.Cell(1, 1).Value = value; sheet.Range(1, 1, 1, columns).Merge(); var range = sheet.Range(1, 1, 1, columns); range.Style.Fill.BackgroundColor = Navy; range.Style.Font.FontColor = XLColor.White; range.Style.Font.Bold = true; range.Style.Font.FontSize = 16; }
     private static void Header(IXLRange range) { range.Style.Fill.BackgroundColor = Turquoise; range.Style.Font.FontColor = XLColor.White; range.Style.Font.Bold = true; }
-    private static string Status(PassengerComputedState state, string key) => state.Requirements.Single(x => x.Key == key).Status.ToString();
+    private static string Status(PassengerComputedState state, string key) => VerificationLabel(state.Requirements.Single(x => x.Key == key).Status);
+    private static string VerificationLabel(VerificationStatus status) => status switch
+    {
+        VerificationStatus.Confirmed => "Confirmado",
+        VerificationStatus.ToVerify => "Por verificar",
+        VerificationStatus.InProgress => "En gestión",
+        VerificationStatus.NotIncluded => "No incluido",
+        VerificationStatus.NotApplicable => "No aplica",
+        _ => status.ToString()
+    };
+    private static string OverallLabel(PassengerOverallStatus status) => status switch
+    {
+        PassengerOverallStatus.Ready => "Listo",
+        PassengerOverallStatus.Pending => "Pendiente",
+        PassengerOverallStatus.Attention => "Atención",
+        _ => status.ToString()
+    };
     private static int Percent(int value, int total) => total == 0 ? 0 : (int)Math.Round(value * 100m / total);
     private static string Csv(string? value) => $"\"{(value ?? "").Replace("\"", "\"\"")}\"";
 }

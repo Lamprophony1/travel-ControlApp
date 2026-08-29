@@ -11,7 +11,7 @@ export default defineConfig({
       manifest: {
         name: 'Control de Viaje',
         short_name: 'Control de Viaje',
-        description: 'Control privado de pasajeros, alojamiento, vuelos, equipaje y transfer grupal.',
+        description: 'Consulta operativa del viaje de Cielito y Ronaldo.',
         theme_color: '#12304a',
         background_color: '#f4f8fb',
         display: 'standalone',
@@ -25,7 +25,7 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//, /^\/health\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/health\//, /^\/robots\.txt$/],
         runtimeCaching: []
       }
     })

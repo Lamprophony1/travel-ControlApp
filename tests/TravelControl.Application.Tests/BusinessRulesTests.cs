@@ -23,6 +23,103 @@ public sealed class BusinessRulesTests
         Assert.Equal(TripOverallStatus.Ready, BusinessRules.CalculateTrip([ready], true).OverallStatus);
     }
 
+    [Fact]
+    public void Not_applicable_is_resolved_only_with_a_reason()
+    {
+        var passenger = Passenger();
+        passenger.DocumentationStatus = VerificationStatus.NotApplicable;
+        var withoutReason = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1)).Requirements.Single(x => x.Key == "documentation");
+        Assert.False(BusinessRules.IsResolved(withoutReason));
+        passenger.DocumentationExceptionReason = "Excepción ficticia justificada";
+        var withReason = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1)).Requirements.Single(x => x.Key == "documentation");
+        Assert.True(BusinessRules.IsResolved(withReason));
+        Assert.Equal(VerificationStatus.NotApplicable, withReason.Status);
+    }
+
+    [Fact]
+    public void Stored_confirmations_do_not_override_invalid_effective_requirements()
+    {
+        var passenger = Passenger();
+        var room = new RoomReservation { InternalCode = "TEST", Status = VerificationStatus.Confirmed, ExpectedCapacity = 1 };
+        room.Passengers.Add(passenger); passenger.RoomReservation = room;
+        var booking = new FlightBooking { TripId = Guid.NewGuid(), Status = VerificationStatus.Confirmed };
+        var link = new PassengerFlight { Passenger = passenger, FlightBooking = booking, TicketStatus = VerificationStatus.Confirmed };
+        passenger.PassengerFlights.Add(link);
+        var baggage = new BaggageEntitlement
+        {
+            Passenger = passenger, FlightBookingId = booking.Id, Status = VerificationStatus.Confirmed,
+            CheckedBagCount = 1, WeightPerBagKg = 20, AppliesOutbound = true, AppliesReturn = true
+        };
+        passenger.BaggageEntitlements.Add(baggage);
+        var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
+        Assert.Equal(VerificationStatus.ToVerify, state.Requirements.Single(x => x.Key == "room").Status);
+        Assert.Equal(VerificationStatus.ToVerify, state.Requirements.Single(x => x.Key == "flight").Status);
+        Assert.Equal(VerificationStatus.ToVerify, state.Requirements.Single(x => x.Key == "baggage").Status);
+    }
+
+    [Fact]
+    public void Documentation_confirmation_becomes_stale_when_dependencies_are_invalid()
+    {
+        var passenger = Passenger();
+        passenger.DocumentationStatus = VerificationStatus.Confirmed;
+        passenger.PassportReviewStatus = VerificationStatus.Confirmed;
+        var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
+        Assert.Equal(VerificationStatus.ToVerify, state.Requirements.Single(x => x.Key == "documentation").Status);
+        Assert.Contains(BusinessRules.StaleDocumentationAlert, state.Alerts);
+    }
+
+    [Fact]
+    public void Every_associated_flight_and_baggage_record_must_be_resolved()
+    {
+        var passenger = Passenger();
+        var validBooking = ValidBooking(passenger, "VALID-001", VerificationStatus.Confirmed);
+        var pendingBooking = ValidBooking(passenger, "PENDING-001", VerificationStatus.ToVerify);
+        passenger.BaggageEntitlements.Add(new BaggageEntitlement
+        {
+            Passenger = passenger, FlightBookingId = validBooking.FlightBookingId, Status = VerificationStatus.Confirmed,
+            CheckedBagCount = 1, WeightPerBagKg = 23, AppliesOutbound = true, AppliesReturn = true
+        });
+        passenger.BaggageEntitlements.Add(new BaggageEntitlement
+        {
+            Passenger = passenger, FlightBookingId = pendingBooking.FlightBookingId, Status = VerificationStatus.ToVerify
+        });
+
+        var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
+
+        Assert.False(BusinessRules.IsResolved(state.Requirements.Single(x => x.Key == "flight")));
+        Assert.False(BusinessRules.IsResolved(state.Requirements.Single(x => x.Key == "baggage")));
+    }
+
+    [Fact]
+    public void Capacity_override_requires_a_reason()
+    {
+        var room = new RoomReservation
+        {
+            InternalCode = "TEST", OperatorId = Guid.NewGuid(), CheckIn = new DateOnly(2026, 1, 1), CheckOut = new DateOnly(2026, 1, 2),
+            RoomType = "Doble", SourceReference = "Fixture", ExpectedCapacity = 1, CapacityOverride = true
+        };
+        room.Passengers.Add(Passenger()); room.Passengers.Add(Passenger());
+        Assert.False(BusinessRules.RoomCanBeConfirmed(room, out _));
+        room.CapacityOverrideReason = "Excepción ficticia";
+        Assert.True(BusinessRules.RoomCanBeConfirmed(room, out _));
+    }
+
+    private static PassengerFlight ValidBooking(Passenger passenger, string ticket, VerificationStatus status)
+    {
+        var booking = new FlightBooking
+        {
+            TripId = Guid.NewGuid(), Airline = "Aerolínea ficticia", Pnr = $"PNR-{ticket}", Status = VerificationStatus.Confirmed,
+            Segments =
+            [
+                new FlightSegment { Type = SegmentType.Outbound, FlightNumber = "FX1", OriginAirport = "AAA", DestinationAirport = "BBB", DepartureAt = DateTimeOffset.UtcNow.AddDays(1), ArrivalAt = DateTimeOffset.UtcNow.AddDays(1).AddHours(2), Sequence = 1 },
+                new FlightSegment { Type = SegmentType.Return, FlightNumber = "FX2", OriginAirport = "BBB", DestinationAirport = "AAA", DepartureAt = DateTimeOffset.UtcNow.AddDays(4), ArrivalAt = DateTimeOffset.UtcNow.AddDays(4).AddHours(2), Sequence = 2 }
+            ]
+        };
+        var link = new PassengerFlight { Passenger = passenger, FlightBooking = booking, FlightBookingId = booking.Id, ElectronicTicketNumber = ticket, TicketStatus = status };
+        passenger.PassengerFlights.Add(link);
+        return link;
+    }
+
     [Theory]
     [InlineData("  José   Pérez ", "JOSE PEREZ")]
     [InlineData("María\tRolón", "MARIA ROLON")]

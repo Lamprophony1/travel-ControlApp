@@ -10,7 +10,7 @@ export const theme = createTheme({
     error: { main: '#b94a48', light: '#fdebea' },
     background: { default: '#f4f8fb', paper: '#ffffff' }
   },
-  typography: { fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif', h1: { fontSize: 'clamp(1.7rem, 3vw, 2.4rem)', fontWeight: 800 }, h2: { fontSize: '1.35rem', fontWeight: 750 } },
+  typography: { fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif', fontSize: 16, h1: { fontSize: 'clamp(1.55rem, 2.4vw, 1.75rem)', fontWeight: 850 }, h2: { fontSize: '1.3rem', fontWeight: 750 } },
   shape: { borderRadius: 14 },
   components: {
     MuiButton: { styleOverrides: { root: { minHeight: 44, textTransform: 'none', fontWeight: 700 } } },
@@ -18,4 +18,3 @@ export const theme = createTheme({
     MuiCard: { styleOverrides: { root: { border: '1px solid #dce8ef', boxShadow: '0 6px 20px rgba(18,48,74,.06)' } } }
   }
 })
-

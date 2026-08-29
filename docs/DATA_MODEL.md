@@ -8,6 +8,8 @@
 - `Attachment`, `FollowUp`, `AuditLog` e `ImportRun` cubren evidencia, seguimiento, trazabilidad e importaciones.
 - `AppUser` usa roles `Administrator`, `Editor` y `Viewer`.
 
+Los contratos públicos (`PublicDashboardDto`, `PublicPassengerDto`, `PublicRequirementDto` y auxiliares) no son entidades ni reutilizan contratos privados. Contienen únicamente el estado operativo permitido y se construyen con consultas sin tracking y proyección explícita de salida.
+
 Los GUID son estables. Pasajeros son únicos por viaje y nombre normalizado; pasaportes no vacíos también. Habitaciones son únicas por viaje y código. `Version` es un entero de concurrencia optimista incrementado en cada escritura, compatible con SQLite.
 
-No se persisten noches, avance ni estado general: se derivan para impedir divergencias.
+No se persisten noches, avance, estado general ni estados efectivos: se derivan para impedir divergencias. Un enum almacenado como `Confirmed` puede resultar pendiente si la estructura subyacente ya no satisface la regla; el histórico permanece intacto.

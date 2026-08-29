@@ -59,6 +59,8 @@ TRAVELCONTROL_HOST_PORT=PUERTO_REAL
 BootstrapImport__Enabled=true
 BootstrapImport__Required=true
 Storage__MaxBytes=10485760
+PublicRead__Enabled=true
+PublicRead__NameMode=Full
 ```
 
 Copiar el workbook privado, sin incorporarlo a Git ni a la imagen:
@@ -113,19 +115,30 @@ Un push a `main` o una ejecución manual realiza:
 10. Verificación del health Docker, `127.0.0.1:${TRAVELCONTROL_HOST_PORT}/health/ready` y `https://${APP_HOSTNAME}/health/ready`.
 11. Rollback a la imagen anterior si falla el despliegue o cualquiera de los health checks.
 
+El despliegue actual usa `travel.crg-dev.com`, puerto loopback `5040`, runner `travel-control-production-vm` con labels `self-hosted, printcost` y no requiere cambios de Cloudflare. Antes de desplegar se exige backup, `PRAGMA integrity_check` y conteos agregados sin datos personales. Después se verifican 46 pasajeros, 25 habitaciones, la distribución 44/24 Top Travel y 2/1 Bespoke, además de preservar usuarios y adjuntos.
+
+Smokes públicos posteriores:
+
+```bash
+curl -fsS https://travel.crg-dev.com/
+curl -fsS https://travel.crg-dev.com/api/public/dashboard
+curl -fsS 'https://travel.crg-dev.com/api/public/passengers?page=1&pageSize=1'
+test "$(curl -sS -o /dev/null -w '%{http_code}' 'https://travel.crg-dev.com/api/passengers?page=1&pageSize=1')" = 401
+```
+
+El script `smoke-public-read.sh` revisa el JSON público de forma recursiva contra las claves prohibidas documentadas en `PUBLIC_READ_ACCESS.md`. El workflow también compara una instantánea sanitizada de cantidades antes y después; no imprime datos personales.
+
 Los logs de error se limitan a 150 líneas y pasan por redacción de campos sensibles. La aplicación tampoco registra payloads, nombres ni documentos del workbook.
 
 ## Cloudflare
 
-La zona real comprobada en GymQuest es `crg-dev.com`. El usuario debe crear un hostname propio para Travel Control en la misma cuenta/zona y usando el mismo mecanismo de tunnels del servidor. No debe modificar `rm.crg-dev.com` ni la ruta de PrintCost.
-
-El destino del Public Hostname es:
+La ruta existente `travel.crg-dev.com` ya apunta al servicio siguiente y no debe modificarse:
 
 ```text
-http://127.0.0.1:${TRAVELCONTROL_HOST_PORT}
+http://127.0.0.1:5040
 ```
 
-La plantilla [cloudflared-travel-control.example.yml](../deploy/cloudflared-travel-control.example.yml) contiene placeholders; el dominio definitivo no está hardcodeado. Si el servidor usa un tunnel administrado desde el dashboard, agregar allí el Public Hostname en lugar de instalar otro reverse proxy. Si la convención operativa mantiene un tunnel nombrado por aplicación, crear solo la nueva ruta/tunnel dentro de la misma cuenta y servicio `cloudflared` ya utilizado.
+La plantilla [cloudflared-travel-control.example.yml](../deploy/cloudflared-travel-control.example.yml) es solo una referencia histórica. No se crea otro túnel, hostname, proxy, servidor ni puerto.
 
 ASP.NET procesa `X-Forwarded-For` y `X-Forwarded-Proto`; producción fuerza cookies Secure. El puerto nunca se publica en `0.0.0.0`.
 

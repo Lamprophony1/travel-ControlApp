@@ -70,7 +70,7 @@ jobs:
       - name: Wait for readiness
         shell: bash
         run: |
-          for attempt in {1..30}; do
+          for _attempt in {1..30}; do
             if curl -fsS http://127.0.0.1:8080/health/ready; then exit 0; fi
             sleep 2
           done
@@ -159,6 +159,13 @@ jobs:
           install -m 0750 scripts/backup-travel-control.sh /opt/travel-control/scripts/backup-travel-control.sh
           install -m 0750 scripts/restore-travel-control.sh /opt/travel-control/scripts/restore-travel-control.sh
           install -m 0750 scripts/deploy-travel-control.sh /opt/travel-control/scripts/deploy-travel-control.sh
+          install -m 0750 scripts/verify-production-state.sh /opt/travel-control/scripts/verify-production-state.sh
+          install -m 0750 scripts/smoke-public-read.sh /opt/travel-control/scripts/smoke-public-read.sh
+      - name: Verify and snapshot sanitized production counts
+        shell: bash
+        run: |
+          /opt/travel-control/scripts/verify-production-state.sh --require-baseline \
+            | tee "${RUNNER_TEMP}/travel-control-state-before.txt"
       - name: Back up current persistent state
         shell: bash
         run: |
@@ -170,6 +177,14 @@ jobs:
       - name: Deploy and verify local, container and HTTPS health
         shell: bash
         run: /opt/travel-control/scripts/deploy-travel-control.sh
+      - name: Verify persistent state was preserved
+        shell: bash
+        run: |
+          after_state="$(mktemp)"
+          trap 'rm -f -- "${after_state}"' EXIT
+          /opt/travel-control/scripts/verify-production-state.sh --require-baseline \
+            | tee "${after_state}"
+          diff -- "${RUNNER_TEMP}/travel-control-state-before.txt" "${after_state}"
       - name: Sanitized diagnostics
         if: failure()
         shell: bash

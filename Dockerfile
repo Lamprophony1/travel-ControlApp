@@ -17,7 +17,7 @@ COPY src/ src/
 RUN dotnet publish src/TravelControl.Api/TravelControl.Api.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
 COPY --from=web-build /src/web/dist /app/publish/wwwroot
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-bookworm-slim AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/travel-control/data /var/lib/travel-control/attachments /var/lib/travel-control/keys /var/lib/travel-control/private \
     && chown -R 10001:10001 /var/lib/travel-control

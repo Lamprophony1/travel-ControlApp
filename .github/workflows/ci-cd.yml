@@ -63,6 +63,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Build test image
         run: docker build -t travel-control:test .
+      - name: Remove stale test container
+        run: docker rm -f travel-control 2>/dev/null || true
       - name: Start test container
         run: docker run -d --name travel-control -p 127.0.0.1:8080:8080 -e Security__CookieSecure=false travel-control:test
       - name: Wait for readiness
@@ -94,6 +96,9 @@ jobs:
             web/playwright-report
           if-no-files-found: ignore
           retention-days: 7
+      - name: Remove test container
+        if: always()
+        run: docker rm -f travel-control 2>/dev/null || true
 
   build-image:
     name: Build and publish immutable image

@@ -1,7 +1,7 @@
 # Decisiones
 
 1. .NET 10 y Node 24: versiones estables del entorno objetivo.
-2. SQLite persistente: simplifica operación privada y permite un único contenedor; WAL/backup se gestionan como un volumen.
+2. SQLite persistente: simplifica operación privada y permite un único contenedor; SQLite, keys y adjuntos usan bind mounts bajo `/opt/travel-control`, siguiendo GymQuest y PrintCost.
 3. Same-origin y cookies: reduce superficie frente a tokens accesibles a JavaScript y elimina CORS.
 4. Transfer único: el dominio modela una sola confirmación del viaje, no una falsa relación por pasajero.
 5. Cinco categorías calculadas: backend es la única fuente de avance y alertas.
@@ -9,3 +9,4 @@
 7. PWA shell-only: instalable y responsive, pero sin cachear información personal.
 8. Imagen única: el host ASP.NET sirve la SPA y API; TLS queda en infraestructura externa.
 9. TypeUI Clean/Fundamentals: jerarquía sobria, sin gradientes, objetivos táctiles de 44 px, safe areas y layouts sin overflow.
+10. Infraestructura compartida: se reutiliza el runner `[self-hosted, printcost]`, la zona `crg-dev.com`, GHCR, Docker Compose y Cloudflare del servidor existente; puerto, hostname, contenedor y directorio permanecen exclusivos.

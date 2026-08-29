@@ -1,0 +1,9 @@
+# Use the same Cloudflare account, crg-dev.com zone and tunnel-management
+# mechanism already used on the server. Replace placeholders outside Git.
+tunnel: REPLACE_WITH_MANAGED_TUNNEL_UUID
+credentials-file: /etc/cloudflared/REPLACE_WITH_MANAGED_TUNNEL_UUID.json
+
+ingress:
+  - hostname: REPLACE_WITH_APP_HOSTNAME
+    service: http://127.0.0.1:REPLACE_WITH_TRAVELCONTROL_HOST_PORT
+  - service: http_status:404

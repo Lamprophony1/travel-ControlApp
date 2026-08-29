@@ -6,4 +6,4 @@ Pasaportes se enmascaran por defecto y solo Editor/Administrator pueden revelarl
 
 Adjuntos PDF/PNG/JPEG se validan por tamaño, MIME y firma binaria, se renombran por UUID, se deduplican con SHA-256 y quedan fuera de `wwwroot`. El service worker no cachea datos ni documentos.
 
-El repositorio ignora `data/private`, `.env`, SQLite local, adjuntos, builds y reportes. Producción debe usar TLS externo, secretos del orquestador, backup cifrado, revisión de auditoría y un proxy que sobrescriba encabezados reenviados.
+El repositorio ignora `data/private`, `.env`, SQLite local, adjuntos, builds y reportes. Producción usa cookies Secure, Cloudflare TLS, puerto ligado solo a loopback y archivos persistentes bajo `/opt/travel-control`. El `.env` tiene modo 600 y el workbook se monta read-only. Los backups locales incluyen datos privados y deben copiarse a almacenamiento externo cifrado.

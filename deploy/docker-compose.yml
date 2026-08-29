@@ -1,0 +1,36 @@
+name: travel-control
+
+services:
+  travel-control:
+    image: ${TRAVELCONTROL_IMAGE:?Set TRAVELCONTROL_IMAGE to an immutable GHCR tag}
+    container_name: travel-control
+    restart: unless-stopped
+    env_file:
+      - /opt/travel-control/travel-control.env
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Database: Data Source=/var/lib/travel-control/data/travel-control.db
+      Security__CookieSecure: "true"
+      Security__DataProtectionKeys: /var/lib/travel-control/keys
+      Storage__Root: /var/lib/travel-control/attachments
+      BootstrapImport__MasterWorkbookPath: /var/lib/travel-control/private/Control_viaje.xlsx
+    ports:
+      - "127.0.0.1:${TRAVELCONTROL_HOST_PORT:?Set TRAVELCONTROL_HOST_PORT}:8080"
+    volumes:
+      - /opt/travel-control/data:/var/lib/travel-control/data
+      - /opt/travel-control/attachments:/var/lib/travel-control/attachments
+      - /opt/travel-control/keys:/var/lib/travel-control/keys
+      - /opt/travel-control/private:/var/lib/travel-control/private:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s

@@ -10,18 +10,33 @@ DESTINATION="${BACKUP_ROOT}/${STAMP}"
 
 [[ "$(realpath -m "${APP_ROOT}")" == "/opt/travel-control" ]] || { echo "Invalid app root" >&2; exit 1; }
 [[ -f "${DB_PATH}" ]] || { echo "Database does not exist; no backup was created."; exit 0; }
-for command in sqlite3 sha256sum tar realpath find docker; do command -v "${command}" >/dev/null; done
+for command in sqlite3 sha256sum realpath find docker; do command -v "${command}" >/dev/null; done
+
+CONTAINER_IMAGE="$(docker inspect --format '{{.Config.Image}}' travel-control 2>/dev/null || true)"
+ARCHIVE_IMAGE="${TRAVELCONTROL_IMAGE:-${CONTAINER_IMAGE}}"
+[[ -n "${ARCHIVE_IMAGE}" ]] || { echo "Cannot determine the Travel Control image for the backup" >&2; exit 1; }
 
 mkdir -p "${DESTINATION}"
 sqlite3 "${DB_PATH}" ".timeout 10000" ".backup '${DESTINATION}/travel-control.db'"
 [[ "$(sqlite3 "${DESTINATION}/travel-control.db" 'PRAGMA integrity_check;')" == "ok" ]]
-if [[ "$(docker inspect --format '{{.State.Running}}' travel-control 2>/dev/null || true)" == "true" ]]; then
-  docker exec --user 10001:10001 travel-control \
-    tar -C /var/lib/travel-control -czf - keys attachments private \
-    > "${DESTINATION}/persistent-files.tar.gz"
-else
-  tar -C "${APP_ROOT}" -czf "${DESTINATION}/persistent-files.tar.gz" keys attachments private
-fi
+
+docker run --rm --network none --read-only --user 0:0 --entrypoint sh \
+  -v "${APP_ROOT}/data:/persistent" \
+  "${ARCHIVE_IMAGE}" -c '
+    chown 10001:1001 /persistent
+    chmod 0770 /persistent
+    for name in travel-control.db travel-control.db-shm travel-control.db-wal; do
+      path="/persistent/${name}"
+      if [ -e "${path}" ]; then chown 10001:1001 "${path}"; chmod 0660 "${path}"; fi
+    done
+  '
+
+docker run --rm --network none --read-only --user 10001:10001 --entrypoint tar \
+  -v "${APP_ROOT}/keys:/var/lib/travel-control/keys:ro" \
+  -v "${APP_ROOT}/attachments:/var/lib/travel-control/attachments:ro" \
+  -v "${APP_ROOT}/private:/var/lib/travel-control/private:ro" \
+  "${ARCHIVE_IMAGE}" -C /var/lib/travel-control -czf - keys attachments private \
+  > "${DESTINATION}/persistent-files.tar.gz"
 (
   cd "${DESTINATION}"
   sha256sum travel-control.db persistent-files.tar.gz > SHA256SUMS

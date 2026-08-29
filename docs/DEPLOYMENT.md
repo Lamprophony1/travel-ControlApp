@@ -160,7 +160,7 @@ Cada backup contiene:
 - workbook privado;
 - retención local predeterminada de 30 días.
 
-Los archivos persistentes se leen desde el contenedor activo con UID `10001`, de modo que las claves de Data Protection mantienen sus permisos restrictivos sin impedir el backup.
+Los archivos persistentes se leen desde un contenedor aislado con UID `10001`, de modo que las claves de Data Protection mantienen sus permisos restrictivos sin impedir el backup. Después del snapshot, el script normaliza exclusivamente los permisos de SQLite a `10001:gc` (`0660`) para que el contenedor y el runner puedan reabrirla de forma segura.
 
 Copiar los backups a almacenamiento externo cifrado. Para restaurar un backup validado:
 

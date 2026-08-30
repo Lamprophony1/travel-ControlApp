@@ -16,10 +16,6 @@ CONTAINER_IMAGE="$(docker inspect --format '{{.Config.Image}}' travel-control 2>
 ARCHIVE_IMAGE="${TRAVELCONTROL_IMAGE:-${CONTAINER_IMAGE}}"
 [[ -n "${ARCHIVE_IMAGE}" ]] || { echo "Cannot determine the Travel Control image for the backup" >&2; exit 1; }
 
-mkdir -p "${DESTINATION}"
-sqlite3 "${DB_PATH}" ".timeout 10000" ".backup '${DESTINATION}/travel-control.db'"
-[[ "$(sqlite3 "${DESTINATION}/travel-control.db" 'PRAGMA integrity_check;')" == "ok" ]]
-
 docker run --rm --network none --read-only --user 0:0 --entrypoint sh \
   -v "${APP_ROOT}/data:/persistent" \
   "${ARCHIVE_IMAGE}" -c '
@@ -30,6 +26,10 @@ docker run --rm --network none --read-only --user 0:0 --entrypoint sh \
       if [ -e "${path}" ]; then chown 10001:1001 "${path}"; chmod 0660 "${path}"; fi
     done
   '
+
+mkdir -p "${DESTINATION}"
+sqlite3 "${DB_PATH}" ".timeout 10000" ".backup '${DESTINATION}/travel-control.db'"
+[[ "$(sqlite3 "${DESTINATION}/travel-control.db" 'PRAGMA integrity_check;')" == "ok" ]]
 
 docker run --rm --network none --read-only --user 10001:10001 --entrypoint tar \
   -v "${APP_ROOT}/keys:/var/lib/travel-control/keys:ro" \

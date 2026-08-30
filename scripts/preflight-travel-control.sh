@@ -140,6 +140,20 @@ docker compose -f "${TRAVELCONTROL_COMPOSE_SOURCE}" config --quiet \
 database_path="${TRAVELCONTROL_ROOT}/data/travel-control.db"
 database_is_empty=true
 if [[ -s "${database_path}" ]]; then
+  # SQLite files are created by the application as UID/GID 10001. Give the
+  # host runner's gc group read/write access before using the host sqlite3
+  # client, while preserving UID 10001 as the file owner for the application.
+  docker run --rm --network none --read-only --user 0:0 --entrypoint sh \
+    -v "${TRAVELCONTROL_ROOT}/data:/persistent" \
+    "${TRAVELCONTROL_IMAGE}" -c '
+      chown 10001:1001 /persistent
+      chmod 0770 /persistent
+      for name in travel-control.db travel-control.db-shm travel-control.db-wal; do
+        path="/persistent/${name}"
+        if [ -e "${path}" ]; then chown 10001:1001 "${path}"; chmod 0660 "${path}"; fi
+      done
+    ' \
+    || fail "cannot normalize SQLite ownership for the application and runner"
   [[ "$(sqlite3 "${database_path}" 'PRAGMA integrity_check;')" == "ok" ]] \
     || fail "the existing SQLite database failed integrity_check"
   passenger_table="$(sqlite3 "${database_path}" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='Passengers';")"

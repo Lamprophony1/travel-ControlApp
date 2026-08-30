@@ -162,7 +162,23 @@ public static class BusinessRules
             : allPassengersReady && transferConfirmed ? TripOverallStatus.Ready : TripOverallStatus.Pending;
         var readinessParts = people.Length == 0 ? 0 : (int)Math.Round(people.Average(x => x.ProgressPercent) * 0.9d);
         var progress = Math.Clamp(readinessParts + (transferConfirmed ? 10 : 0), 0, 100);
+        if (overall != TripOverallStatus.Ready && progress == 100) progress = 99;
         return new(overall, progress, allPassengersReady, transferConfirmed, alerts);
+    }
+
+    public static VerificationStatus DeriveFlightBookingStatus(FlightBooking booking)
+    {
+        var hasRealData = !string.IsNullOrWhiteSpace(booking.Pnr) || !string.IsNullOrWhiteSpace(booking.Airline)
+            || !string.IsNullOrWhiteSpace(booking.GeneralReference) || !string.IsNullOrWhiteSpace(booking.SourceReference)
+            || booking.Segments.Count > 0 || booking.PassengerFlights.Count > 0;
+        if (!hasRealData) return VerificationStatus.ToVerify;
+        if (string.IsNullOrWhiteSpace(booking.Pnr) || string.IsNullOrWhiteSpace(booking.Airline)
+            || !FlightStructureCanBeConfirmed(booking, out _) || booking.PassengerFlights.Count == 0)
+            return VerificationStatus.InProgress;
+        return booking.PassengerFlights.All(link => link.TicketStatus == VerificationStatus.Confirmed
+                && FlightCanBeConfirmed(booking, link, out _))
+            ? VerificationStatus.Confirmed
+            : VerificationStatus.InProgress;
     }
 
     public static bool IsResolved(RequirementState requirement) => IsResolved(requirement.Status)

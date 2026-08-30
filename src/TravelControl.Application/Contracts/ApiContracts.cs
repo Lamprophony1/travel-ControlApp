@@ -18,7 +18,8 @@ public sealed record TransferStatusResponse(bool IsConfirmed, DateTimeOffset? Co
 public sealed record DashboardResponse(IReadOnlyList<DashboardKpi> Kpis, IReadOnlyList<CategoryProgress> Categories,
     IReadOnlyDictionary<string, int> OverallDistribution, IReadOnlyList<OperatorSummary> Operators,
     IReadOnlyList<PriorityAction> PriorityActions, IReadOnlyList<RecentActivity> RecentActivity,
-    TransferStatusResponse Transfer, TripComputedState TripReadiness);
+    TransferStatusResponse Transfer, TripComputedState TripReadiness,
+    int RoomsConfirmed, int RoomsPending, int SpecificPropertiesPending);
 
 public sealed record CreatePassengerRequest(string FullName, DateOnly? BirthDate, string? Nationality, string? PassportNumber,
     DateOnly? PassportExpiry, string? Phone, string? Email, Guid? PrimaryOperatorId, Guid? RoomReservationId,
@@ -44,11 +45,11 @@ public sealed record FlightBookingRequest(VerificationStatus Status, string? Air
     IReadOnlyList<Guid> PassengerIds, long Version = 0, IReadOnlyList<Guid>? ConfirmedPassengerRemovalIds = null);
 public sealed record FlightSegmentRequest(Guid? Id, SegmentType Type, string? FlightNumber, string? OriginAirport, string? DestinationAirport,
     DateTimeOffset? DepartureAt, DateTimeOffset? ArrivalAt, string? OriginTimeZone, string? DestinationTimeZone, int Sequence);
-public sealed record PassengerTicketRequest(string ElectronicTicketNumber, VerificationStatus Status, string? Notes);
+public sealed record PassengerTicketRequest(string ElectronicTicketNumber, VerificationStatus Status, string? Notes, long Version);
 public sealed record BaggageUpdateRequest(Guid PassengerId, Guid? FlightBookingId, VerificationStatus Status, int CheckedBagCount,
     decimal WeightPerBagKg, bool AppliesOutbound, bool AppliesReturn, string? ExceptionReason, string? SourceReference, string? Notes, long Version = 0);
 public sealed record GroupBaggageRequest(Guid FlightBookingId, IReadOnlyList<Guid>? PassengerIds, string? SourceReference, string? Notes);
 public sealed record TripTransferStatusRequest(bool IsConfirmed, string? Notes, long Version);
 public sealed record FollowUpRequest(Guid? TripId, Guid? PassengerId, Guid? RoomReservationId, string Title, string? Description,
     DateOnly? DueDate, FollowUpStatus Status, FollowUpPriority Priority, long Version = 0);
-public sealed record AttachmentLinkRequest(Guid? PassengerId, Guid? RoomId, Guid? FlightId, Guid? BaggageId);
+public sealed record AttachmentLinkRequest(Guid? PassengerId, Guid? RoomId, Guid? FlightId, Guid? BaggageId, DocumentType? EvidenceType);

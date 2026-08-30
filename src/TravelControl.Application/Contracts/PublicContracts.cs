@@ -47,6 +47,7 @@ public sealed record PublicDashboardDto(
     int PendingPassengers,
     int AttentionPassengers,
     int ProgressPercent,
+    TripOverallStatus OverallStatus,
     bool TransferConfirmed,
     IReadOnlyList<PublicDashboardKpi> Kpis,
     IReadOnlyList<PublicCategoryProgress> Categories,

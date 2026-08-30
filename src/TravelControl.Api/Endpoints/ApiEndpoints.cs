@@ -156,6 +156,7 @@ public static class ApiEndpoints
                     RoomReservation = p.RoomReservation is null ? null : new { p.RoomReservation.Id, p.RoomReservation.InternalCode, p.RoomReservation.Hotel,
                         p.RoomReservation.RoomType, p.RoomReservation.CheckIn, p.RoomReservation.CheckOut, p.RoomReservation.Status },
                     PassengerFlights = p.PassengerFlights.Select(x => new { x.FlightBookingId, x.ElectronicTicketNumber, x.TicketStatus, x.Notes,
+                        x.Version, x.UpdatedAt, x.UpdatedById,
                         Booking = new { x.FlightBooking.Pnr, x.FlightBooking.Airline, x.FlightBooking.Status, x.FlightBooking.SourceReference,
                             Segments = x.FlightBooking.Segments.OrderBy(s => s.Sequence).Select(s => new { s.Id, s.Type, s.FlightNumber, s.OriginAirport, s.DestinationAirport, s.DepartureAt, s.ArrivalAt }) } }),
                     BaggageEntitlements = p.BaggageEntitlements.Select(x => new { x.Id, x.FlightBookingId, x.Status, x.CheckedBagCount,
@@ -228,7 +229,14 @@ public static class ApiEndpoints
             {
                 if (req.RoomReservationId.HasValue) entity.RoomReservationId = req.RoomReservationId;
                 if (req.NextAction is not null) { entity.NextAction = req.NextAction; entity.NextActionDueDate = req.NextActionDueDate; }
-                if (req.FlightBookingId.HasValue && !existingFlights.Contains(entity.Id)) db.PassengerFlights.Add(new PassengerFlight { PassengerId = entity.Id, FlightBookingId = req.FlightBookingId.Value });
+                if (req.FlightBookingId.HasValue && !existingFlights.Contains(entity.Id)) db.PassengerFlights.Add(new PassengerFlight
+                    { PassengerId = entity.Id, FlightBookingId = req.FlightBookingId.Value, Version = 1, UpdatedById = UserId(user) });
+            }
+            if (req.FlightBookingId.HasValue)
+            {
+                var booking = await db.FlightBookings.Include(x => x.Segments).Include(x => x.PassengerFlights)
+                    .SingleAsync(x => x.Id == req.FlightBookingId.Value, ct);
+                booking.Status = BusinessRules.DeriveFlightBookingStatus(booking);
             }
             await db.SaveChangesAsync(ct); await Audit(db, user, "Passenger", null, Guid.Empty, "BulkAssign", null, new { count = entities.Count, req.RoomReservationId, req.FlightBookingId, req.NextAction }, ct);
             return Results.Ok(new { updated = entities.Count });
@@ -305,7 +313,9 @@ public static class ApiEndpoints
             var entities = await db.FlightBookings.AsNoTracking().Include(x => x.Segments)
                 .Include(x => x.PassengerFlights).ThenInclude(x => x.Passenger).ToListAsync(ct);
             return Results.Ok(entities.OrderBy(x => x.Pnr).Select(x => new { x.Id, x.Status, x.Airline, x.IssuingAgency, x.Pnr, x.GeneralReference, x.SourceReference, x.Notes,
-                Segments = x.Segments.OrderBy(s => s.Sequence).ToList(), Passengers = x.PassengerFlights.Select(p => new { p.PassengerId, p.Passenger.FullName, p.ElectronicTicketNumber, p.TicketStatus, p.Notes }).ToList(), x.Version }));
+                Segments = x.Segments.OrderBy(s => s.Sequence).Select(s => new { s.Id, s.Type, s.FlightNumber, s.OriginAirport,
+                    s.DestinationAirport, s.DepartureAt, s.ArrivalAt, s.OriginTimeZone, s.DestinationTimeZone, s.Sequence }).ToList(),
+                Passengers = x.PassengerFlights.Select(p => new { p.PassengerId, p.Passenger.FullName, p.ElectronicTicketNumber, p.TicketStatus, p.Notes, p.Version, p.UpdatedAt, p.UpdatedById }).ToList(), x.Version }));
         });
         group.MapPost("/", async (FlightBookingRequest req, IValidator<FlightBookingRequest> validator, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
             await SaveFlight(null, req, validator, db, user, ct)).RequireAuthorization("CanEdit");
@@ -314,16 +324,27 @@ public static class ApiEndpoints
         group.MapPut("/{flightId:guid}/passengers/{passengerId:guid}/ticket", async (Guid flightId, Guid passengerId, PassengerTicketRequest req, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
         {
             var link = await db.PassengerFlights.Include(x => x.FlightBooking).ThenInclude(x => x.Segments)
+                .Include(x => x.FlightBooking).ThenInclude(x => x.PassengerFlights)
                 .SingleOrDefaultAsync(x => x.FlightBookingId == flightId && x.PassengerId == passengerId, ct);
             if (link is null) return Results.NotFound();
-            var before = new { link.ElectronicTicketNumber, link.TicketStatus };
+            if (link.Version != req.Version)
+                return Results.Conflict(new { message = "El ticket cambió desde que abriste la ficha. Recargá antes de guardar." });
+            var before = new { ticket = Mask(link.ElectronicTicketNumber), link.TicketStatus };
             link.ElectronicTicketNumber = Blank(req.ElectronicTicketNumber); link.TicketStatus = req.Status; link.Notes = Blank(req.Notes);
+            link.UpdatedById = UserId(user);
             if (req.Status == VerificationStatus.NotApplicable && string.IsNullOrWhiteSpace(req.Notes))
                 return Results.BadRequest(new { message = "No aplica requiere una justificación." });
             if (req.Status == VerificationStatus.Confirmed && !BusinessRules.FlightCanBeConfirmed(link.FlightBooking, link, out var missing))
                 return Results.BadRequest(new { message = "No se puede confirmar el ticket.", missing });
-            await db.SaveChangesAsync(ct); await Audit(db, user, "PassengerFlight", passengerId, $"{passengerId}:{flightId}", "TicketUpdate", before, new { ticket = Mask(link.ElectronicTicketNumber), link.TicketStatus }, ct);
-            return Results.NoContent();
+            link.FlightBooking.Status = BusinessRules.DeriveFlightBookingStatus(link.FlightBooking);
+            try { await db.SaveChangesAsync(ct); }
+            catch (DbUpdateConcurrencyException)
+            {
+                return Results.Conflict(new { message = "El ticket cambió desde que abriste la ficha. Recargá antes de guardar." });
+            }
+            await Audit(db, user, "PassengerFlight", passengerId, $"{passengerId}:{flightId}", "TicketUpdate", before,
+                new { ticket = Mask(link.ElectronicTicketNumber), link.TicketStatus, link.UpdatedById, link.UpdatedAt }, ct);
+            return Results.Ok(new { link.Version, link.UpdatedAt, link.FlightBooking.Status });
         }).RequireAuthorization("CanEdit");
         group.MapDelete("/{id:guid}", async (Guid id, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
         {
@@ -350,7 +371,7 @@ public static class ApiEndpoints
         {
             var trip = await db.Trips.SingleAsync(x => x.IsActive, ct); entity = new FlightBooking { TripId = trip.Id }; db.FlightBookings.Add(entity);
         }
-        entity.Status = req.Status; entity.Airline = Blank(req.Airline); entity.IssuingAgency = Blank(req.IssuingAgency); entity.Pnr = Blank(req.Pnr);
+        entity.Airline = Blank(req.Airline); entity.IssuingAgency = Blank(req.IssuingAgency); entity.Pnr = Blank(req.Pnr);
         entity.GeneralReference = Blank(req.GeneralReference); entity.SourceReference = Blank(req.SourceReference); entity.Notes = Blank(req.Notes);
         var requestedSegmentIds = req.Segments.Where(x => x.Id.HasValue).Select(x => x.Id!.Value).ToHashSet();
         if (requestedSegmentIds.Count != req.Segments.Count(x => x.Id.HasValue)
@@ -386,20 +407,13 @@ public static class ApiEndpoints
         }
         var existingPassengers = entity.PassengerFlights.Select(x => x.PassengerId).ToHashSet();
         foreach (var passengerId in requestedPassengers.Where(x => !existingPassengers.Contains(x)))
-            entity.PassengerFlights.Add(new PassengerFlight { PassengerId = passengerId, FlightBooking = entity });
+            entity.PassengerFlights.Add(new PassengerFlight { PassengerId = passengerId, FlightBooking = entity, Version = 1, UpdatedById = UserId(user) });
 
-        if (req.Status == VerificationStatus.Confirmed)
+        entity.Status = BusinessRules.DeriveFlightBookingStatus(entity);
+        if (entity.Status == VerificationStatus.Confirmed)
         {
-            var missing = new List<string>();
-            if (!BusinessRules.FlightStructureCanBeConfirmed(entity, out var structureMissing)) missing.AddRange(structureMissing);
-            if (entity.PassengerFlights.Count == 0) missing.Add("pasajeros asociados");
-            foreach (var link in entity.PassengerFlights)
-            {
-                if (link.TicketStatus != VerificationStatus.Confirmed) missing.Add("tickets individuales confirmados");
-                if (!BusinessRules.FlightCanBeConfirmed(entity, link, out var ticketMissing)) missing.AddRange(ticketMissing);
-            }
-            if (missing.Count > 0) return Results.BadRequest(new { message = "No se puede confirmar el ticket.", missing = missing.Distinct() });
-            entity.VerifiedAt = DateTimeOffset.UtcNow; entity.VerifiedById = UserId(user);
+            entity.VerifiedAt = DateTimeOffset.UtcNow;
+            entity.VerifiedById = UserId(user);
         }
         try { await db.SaveChangesAsync(ct); } catch (DbUpdateConcurrencyException) { return Conflict(); }
         await Audit(db, user, "FlightBooking", null, entity.Id, id.HasValue ? "Update" : "Create", before,
@@ -411,9 +425,22 @@ public static class ApiEndpoints
     private static void MapBaggage(RouteGroupBuilder api)
     {
         var group = api.MapGroup("/baggage");
-        group.MapGet("/", async (AppDbContext db, CancellationToken ct) => Results.Ok(await db.BaggageEntitlements.AsNoTracking().Include(x => x.Passenger).Include(x => x.FlightBooking)
-            .OrderBy(x => x.Passenger.FullName).Select(x => new { x.Id, x.PassengerId, x.Passenger.FullName, x.FlightBookingId, Pnr = x.FlightBooking == null ? null : x.FlightBooking.Pnr,
-                x.Status, x.CheckedBagCount, x.WeightPerBagKg, x.AppliesOutbound, x.AppliesReturn, x.ExceptionReason, x.SourceReference, x.Notes, x.Version }).ToListAsync(ct)));
+        group.MapGet("/", async (AppDbContext db, CancellationToken ct) =>
+        {
+            var entries = await db.BaggageEntitlements.AsNoTracking().Include(x => x.Passenger).Include(x => x.FlightBooking)
+                .OrderBy(x => x.Passenger.FullName).ToListAsync(ct);
+            var baggageIds = entries.Select(x => x.Id).ToArray();
+            var flightIds = entries.Where(x => x.FlightBookingId.HasValue).Select(x => x.FlightBookingId!.Value).Distinct().ToArray();
+            var proofs = await db.AttachmentLinks.AsNoTracking().Where(x => x.EvidenceType == DocumentType.BaggageProof
+                    && (x.BaggageEntitlementId.HasValue && baggageIds.Contains(x.BaggageEntitlementId.Value)
+                        || x.FlightBookingId.HasValue && flightIds.Contains(x.FlightBookingId.Value)))
+                .Select(x => new { x.BaggageEntitlementId, x.FlightBookingId }).ToListAsync(ct);
+            return Results.Ok(entries.Select(x => new { x.Id, x.PassengerId, x.Passenger.FullName, x.FlightBookingId,
+                Pnr = x.FlightBooking?.Pnr, x.Status, x.CheckedBagCount, x.WeightPerBagKg, x.AppliesOutbound, x.AppliesReturn,
+                x.ExceptionReason, x.SourceReference, x.Notes, x.Version,
+                EvidenceLabel = proofs.Any(p => p.BaggageEntitlementId == x.Id) ? "Comprobante directo"
+                    : proofs.Any(p => p.FlightBookingId == x.FlightBookingId) ? "Comprobante compartido por PNR" : "Sin evidencia" }));
+        });
         group.MapPost("/", async (BaggageUpdateRequest req, IValidator<BaggageUpdateRequest> validator, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
             await SaveBaggage(null, req, validator, db, user, ct)).RequireAuthorization("CanEdit");
         group.MapPut("/{id:guid}", async (Guid id, BaggageUpdateRequest req, IValidator<BaggageUpdateRequest> validator,
@@ -615,10 +642,11 @@ public static class ApiEndpoints
             var file = form.Files.GetFile("file");
             if (file is null) return Results.BadRequest(new { message = "Adjuntá un archivo XLSX." });
             var overwriteExisting = bool.TryParse(form["overwriteExisting"], out var overwrite) && overwrite;
+            var sheetName = string.IsNullOrWhiteSpace(form["sheetName"]) ? null : form["sheetName"].ToString();
             try
             {
                 await using var stream = file.OpenReadStream();
-                return Results.Ok(await service.PreviewAsync(stream, file.FileName, overwriteExisting, ct));
+                return Results.Ok(await service.PreviewAsync(stream, file.FileName, overwriteExisting, ct, sheetName));
             }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
             catch (Exception ex) when (ex is not OperationCanceledException) { return Results.BadRequest(new { message = "El archivo XLSX no se pudo leer." }); }
@@ -630,11 +658,12 @@ public static class ApiEndpoints
             if (file is null) return Results.BadRequest(new { message = "Adjuntá un archivo XLSX." });
             var overwriteExisting = bool.TryParse(form["overwriteExisting"], out var overwrite) && overwrite;
             var confirmOverwrite = bool.TryParse(form["confirmOverwrite"], out var confirmed) && confirmed;
+            var sheetName = string.IsNullOrWhiteSpace(form["sheetName"]) ? null : form["sheetName"].ToString();
             try
             {
                 await using var stream = file.OpenReadStream();
                 var result = await service.CommitAsync(stream, file.FileName, overwriteExisting, confirmOverwrite,
-                    UserId(user), user.Identity?.Name, ct);
+                    UserId(user), user.Identity?.Name, ct, sheetName);
                 return result.CanCommit ? Results.Ok(result) : Results.BadRequest(result);
             }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
@@ -647,7 +676,11 @@ public static class ApiEndpoints
         exports.MapGet("/control.xlsx", async (ExcelExportService service, CancellationToken ct) => Results.File(await service.ExportAsync(ct), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"control-viaje-{DateTime.UtcNow:yyyyMMdd}.xlsx"));
         exports.MapGet("/passengers.csv", async (ExcelExportService service, CancellationToken ct) => Results.File(System.Text.Encoding.UTF8.GetPreamble().Concat(await service.ExportPassengersCsvAsync(ct)).ToArray(), "text/csv; charset=utf-8", $"pasajeros-{DateTime.UtcNow:yyyyMMdd}.csv"));
         exports.MapGet("/pending.xlsx", async (ExcelExportService service, CancellationToken ct) => Results.File(await service.ExportPendingAsync(ct), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"pendientes-{DateTime.UtcNow:yyyyMMdd}.xlsx"));
-        exports.MapGet("/backup.json", async (ExcelExportService service, CancellationToken ct) => Results.Text(await service.ExportBackupJsonAsync(ct), "application/json")).RequireAuthorization("AdminOnly");
+        static async Task<IResult> StructuredJson(ExcelExportService service, CancellationToken ct) =>
+            Results.File(System.Text.Encoding.UTF8.GetBytes(await service.ExportBackupJsonAsync(ct)), "application/json",
+                $"travel-control-structured-{DateTime.UtcNow:yyyyMMdd}.json");
+        exports.MapGet("/structured.json", StructuredJson).RequireAuthorization("AdminOnly");
+        exports.MapGet("/backup.json", StructuredJson).RequireAuthorization("AdminOnly");
     }
 
     private static void MapAttachments(RouteGroupBuilder api)
@@ -663,12 +696,19 @@ public static class ApiEndpoints
                 {
                     Id = item.AttachmentId,
                     item.LinkId,
-                    DocumentType = $"{item.DocumentType} · {EvidenceSourceLabel(item.Source)}",
+                    item.EvidenceType,
+                    DocumentType = item.EvidenceType,
+                    item.SourceType,
+                    item.SourceId,
+                    item.SourceLabel,
+                    item.IsDirect,
+                    item.CanUnlinkHere,
+                    item.AffectedPassengerCount,
+                    item.ManagePath,
                     item.OriginalName,
                     item.MimeType,
                     item.Size,
-                    item.UploadedAt,
-                    Association = item.Source
+                    item.UploadedAt
                 }));
             }
             var query = db.Attachments.AsNoTracking().AsQueryable();
@@ -679,7 +719,7 @@ public static class ApiEndpoints
             var entries = await query.Select(x => new
             {
                 x.Id,
-                x.DocumentType,
+                LegacyDocumentType = x.DocumentType,
                 x.OriginalName,
                 x.MimeType,
                 x.Size,
@@ -692,6 +732,7 @@ public static class ApiEndpoints
                     RoomId = link.RoomReservationId,
                     FlightId = link.FlightBookingId,
                     BaggageId = link.BaggageEntitlementId,
+                    link.EvidenceType,
                     link.CreatedAt
                 })
             }).ToListAsync(ct);
@@ -708,8 +749,9 @@ public static class ApiEndpoints
                         new { stored.Entity.DocumentType, stored.Entity.MimeType, stored.Entity.Size }, ct);
                 if (stored.LinkCreated)
                     await Audit(db, user, "AttachmentLink", stored.Link.PassengerId, stored.Link.Id, "Create", null,
-                        new { stored.Link.AttachmentId, stored.Link.PassengerId, stored.Link.RoomReservationId, stored.Link.FlightBookingId, stored.Link.BaggageEntitlementId }, ct);
-                return Results.Ok(new { stored.Entity.Id, stored.Entity.OriginalName, stored.Entity.MimeType, stored.Entity.Size,
+                        new { stored.Link.AttachmentId, stored.Link.EvidenceType, stored.Link.PassengerId, stored.Link.RoomReservationId, stored.Link.FlightBookingId, stored.Link.BaggageEntitlementId }, ct);
+                return Results.Ok(new { AttachmentId = stored.Entity.Id, stored.Entity.OriginalName, stored.Entity.MimeType, stored.Entity.Size,
+                    stored.Link.EvidenceType,
                     LinkId = stored.Link.Id, stored.DuplicateFile, stored.LinkCreated }); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
         }).RequireAuthorization("CanEdit");
@@ -718,52 +760,39 @@ public static class ApiEndpoints
         {
             try
             {
-                var (link, created) = await storage.LinkAsync(id, UserId(user), req.PassengerId, req.RoomId, req.FlightId, req.BaggageId, ct);
+                if (!req.EvidenceType.HasValue) return Results.BadRequest(new { message = "EvidenceType es obligatorio." });
+                var (link, created) = await storage.LinkAsync(id, req.EvidenceType.Value, UserId(user), req.PassengerId, req.RoomId, req.FlightId, req.BaggageId, ct);
                 if (created)
                     await Audit(db, user, "AttachmentLink", req.PassengerId, link.Id, "Create", null,
-                        new { link.AttachmentId, link.PassengerId, link.RoomReservationId, link.FlightBookingId, link.BaggageEntitlementId }, ct);
-                return Results.Ok(new { link.Id, link.AttachmentId, linkCreated = created });
+                        new { link.AttachmentId, link.EvidenceType, link.PassengerId, link.RoomReservationId, link.FlightBookingId, link.BaggageEntitlementId }, ct);
+                return Results.Ok(new { LinkId = link.Id, link.AttachmentId, link.EvidenceType, linkCreated = created });
             }
             catch (KeyNotFoundException) { return Results.NotFound(); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
         }).RequireAuthorization("CanEdit");
-        group.MapDelete("/{attachmentId:guid}/links/{linkId:guid}", async (Guid attachmentId, Guid linkId,
-            AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
+        group.MapGet("/{attachmentId:guid}/links/{linkId:guid}/impact", async (Guid attachmentId, Guid linkId,
+            AttachmentStorage storage, CancellationToken ct) =>
         {
-            var link = await db.AttachmentLinks.Include(x => x.Attachment)
-                .SingleOrDefaultAsync(x => x.Id == linkId && x.AttachmentId == attachmentId, ct);
-            if (link is null) return Results.NotFound();
-            var passengerId = link.PassengerId;
-            var before = new { link.AttachmentId, link.PassengerId, link.RoomReservationId, link.FlightBookingId, link.BaggageEntitlementId };
-            if (link.Attachment.PassengerId == link.PassengerId) link.Attachment.PassengerId = null;
-            if (link.Attachment.RoomReservationId == link.RoomReservationId) link.Attachment.RoomReservationId = null;
-            if (link.Attachment.FlightBookingId == link.FlightBookingId) link.Attachment.FlightBookingId = null;
-            if (link.Attachment.BaggageEntitlementId == link.BaggageEntitlementId) link.Attachment.BaggageEntitlementId = null;
-            db.AttachmentLinks.Remove(link);
-            await db.SaveChangesAsync(ct);
-            await Audit(db, user, "AttachmentLink", passengerId, linkId, "Unlink", before, null, ct);
-            return Results.NoContent();
+            try { return Results.Ok(await storage.GetImpactAsync(attachmentId, linkId, ct)); }
+            catch (KeyNotFoundException) { return Results.NotFound(); }
+        });
+        group.MapDelete("/{attachmentId:guid}/links/{linkId:guid}", async (Guid attachmentId, Guid linkId,
+            bool? deleteIfOrphan, AttachmentStorage storage, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (deleteIfOrphan == true && !user.IsInRole(nameof(UserRole.Administrator))) return Results.Forbid();
+            try
+            {
+                var result = await storage.UnlinkAsync(attachmentId, linkId, deleteIfOrphan == true,
+                    UserId(user), user.Identity?.Name, ct);
+                return Results.Ok(result);
+            }
+            catch (KeyNotFoundException) { return Results.NotFound(); }
         }).RequireAuthorization("CanEdit");
         group.MapGet("/{id:guid}", async (Guid id, AttachmentStorage storage, CancellationToken ct) =>
         {
             try { var (entity, stream) = await storage.OpenAsync(id, ct); return Results.File(stream, entity.MimeType, entity.OriginalName, enableRangeProcessing: true); }
             catch (KeyNotFoundException) { return Results.NotFound(); }
         });
-        group.MapDelete("/{id:guid}", async (Guid id, bool confirm, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
-        {
-            if (!confirm) return Results.BadRequest(new { message = "Confirmá la eliminación definitiva del archivo." });
-            var entity = await db.Attachments.Include(x => x.Links).SingleOrDefaultAsync(x => x.Id == id, ct);
-            if (entity is null) return Results.NotFound();
-            if (entity.Links.Count > 0 || entity.PassengerId.HasValue || entity.RoomReservationId.HasValue
-                || entity.FlightBookingId.HasValue || entity.BaggageEntitlementId.HasValue)
-                return Results.Conflict(new { message = "Desvinculá el archivo de todas las entidades antes de eliminarlo." });
-            var path = entity.SecurePath;
-            db.Attachments.Remove(entity);
-            await db.SaveChangesAsync(ct);
-            await Audit(db, user, "Attachment", null, id, "Delete", new { entity.OriginalName, entity.Sha256 }, null, ct);
-            if (File.Exists(path)) File.Delete(path);
-            return Results.NoContent();
-        }).RequireAuthorization("AdminOnly");
     }
 
     private static void MapUsers(RouteGroupBuilder api)

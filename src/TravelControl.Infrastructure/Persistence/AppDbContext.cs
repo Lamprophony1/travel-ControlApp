@@ -66,7 +66,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
             entity.HasIndex(x => new { x.TripId, x.InternalCode }).IsUnique();
         });
         builder.Entity<FlightBooking>().HasIndex(x => new { x.TripId, x.Pnr });
-        builder.Entity<PassengerFlight>().HasKey(x => new { x.PassengerId, x.FlightBookingId });
+        builder.Entity<PassengerFlight>(entity =>
+        {
+            entity.HasKey(x => new { x.PassengerId, x.FlightBookingId });
+            entity.Property(x => x.Version).IsConcurrencyToken();
+        });
         builder.Entity<BaggageEntitlement>(entity =>
         {
             entity.Ignore(x => x.Includes23Kg);
@@ -83,10 +87,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
             entity.HasOne(x => x.BaggageEntitlement).WithMany().HasForeignKey(x => x.BaggageEntitlementId).OnDelete(DeleteBehavior.Cascade);
             entity.ToTable(table => table.HasCheckConstraint("CK_AttachmentLink_ExactlyOneTarget",
                 "((PassengerId IS NOT NULL) + (RoomReservationId IS NOT NULL) + (FlightBookingId IS NOT NULL) + (BaggageEntitlementId IS NOT NULL)) = 1"));
-            entity.HasIndex(x => new { x.AttachmentId, x.PassengerId }).IsUnique().HasFilter("PassengerId IS NOT NULL");
-            entity.HasIndex(x => new { x.AttachmentId, x.RoomReservationId }).IsUnique().HasFilter("RoomReservationId IS NOT NULL");
-            entity.HasIndex(x => new { x.AttachmentId, x.FlightBookingId }).IsUnique().HasFilter("FlightBookingId IS NOT NULL");
-            entity.HasIndex(x => new { x.AttachmentId, x.BaggageEntitlementId }).IsUnique().HasFilter("BaggageEntitlementId IS NOT NULL");
+            entity.HasIndex(x => new { x.AttachmentId, x.PassengerId, x.EvidenceType }).IsUnique().HasFilter("PassengerId IS NOT NULL");
+            entity.HasIndex(x => new { x.AttachmentId, x.RoomReservationId, x.EvidenceType }).IsUnique().HasFilter("RoomReservationId IS NOT NULL");
+            entity.HasIndex(x => new { x.AttachmentId, x.FlightBookingId, x.EvidenceType }).IsUnique().HasFilter("FlightBookingId IS NOT NULL");
+            entity.HasIndex(x => new { x.AttachmentId, x.BaggageEntitlementId, x.EvidenceType }).IsUnique().HasFilter("BaggageEntitlementId IS NOT NULL");
         });
         builder.Entity<ImportRun>().HasIndex(x => new { x.Sha256, x.DryRun });
         builder.Entity<FollowUp>().HasOne(x => x.Passenger).WithMany(x => x.FollowUps)
@@ -111,6 +115,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
                 entry.Entity.UpdatedAt = now;
                 if (entry.State == EntityState.Modified)
                     entry.Entity.Version = entry.OriginalValues.GetValue<long>(nameof(Entity.Version)) + 1;
+            }
+        }
+        foreach (var entry in ChangeTracker.Entries<PassengerFlight>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                entry.Entity.Version = Math.Max(1, entry.Entity.Version);
+                entry.Entity.UpdatedAt = now;
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Entity.Version = entry.OriginalValues.GetValue<long>(nameof(PassengerFlight.Version)) + 1;
+                entry.Entity.UpdatedAt = now;
             }
         }
         return base.SaveChangesAsync(cancellationToken);

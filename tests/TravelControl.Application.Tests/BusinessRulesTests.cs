@@ -124,6 +124,33 @@ public sealed class BusinessRulesTests
         Assert.Equal(VerificationStatus.Confirmed, state.Requirements.Single(x => x.Key == "room").Status);
     }
 
+    [Fact]
+    public void Trip_progress_is_capped_when_a_global_blocker_remains()
+    {
+        var ready = new PassengerComputedState(PassportStatus.Valid, PassengerOverallStatus.Ready, 100, [], []);
+        var state = BusinessRules.CalculateTrip([ready], true, ["Propiedad pendiente"]);
+        Assert.Equal(TripOverallStatus.Attention, state.OverallStatus);
+        Assert.Equal(99, state.ProgressPercent);
+    }
+
+    [Fact]
+    public void Flight_booking_status_is_derived_from_structure_passengers_and_effective_tickets()
+    {
+        var passenger = Passenger();
+        var link = ValidBooking(passenger, "TICKET-FIXTURE", VerificationStatus.ToVerify);
+        var booking = link.FlightBooking;
+        booking.PassengerFlights.Add(link);
+        Assert.Equal(VerificationStatus.InProgress, BusinessRules.DeriveFlightBookingStatus(booking));
+        link.TicketStatus = VerificationStatus.Confirmed;
+        Assert.Equal(VerificationStatus.Confirmed, BusinessRules.DeriveFlightBookingStatus(booking));
+        booking.Pnr = null;
+        Assert.Equal(VerificationStatus.InProgress, BusinessRules.DeriveFlightBookingStatus(booking));
+        booking.Airline = null;
+        booking.Segments.Clear();
+        booking.PassengerFlights.Clear();
+        Assert.Equal(VerificationStatus.ToVerify, BusinessRules.DeriveFlightBookingStatus(booking));
+    }
+
     private static PassengerFlight ValidBooking(Passenger passenger, string ticket, VerificationStatus status)
     {
         var booking = new FlightBooking

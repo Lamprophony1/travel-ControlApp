@@ -12,12 +12,15 @@ namespace TravelControl.Api.Tests;
 
 public sealed class PublicApiTests
 {
+    private const string Email = "admin.public@example.test";
+    private const string Password = "Strong-test-password-123!";
     private static readonly string[] ForbiddenKeys =
     [
         "passportNumber", "maskedPassport", "birthDate", "nationality", "passportExpiry", "phone", "email",
         "dietaryRestrictions", "notes", "nextAction", "nextActionDueDate", "pnr", "electronicTicketNumber",
         "sourceReference", "operatorContact", "attachments", "followUps", "audit", "auditLog", "updatedBy", "userName",
-        "normalizedPassportNumber", "securePath", "storedName", "originalName", "sha256", "attachmentId", "attachmentLinkId"
+        "normalizedPassportNumber", "securePath", "storedName", "originalName", "sha256", "attachmentId", "attachmentLinkId",
+        "linkId", "evidenceType", "sourceId", "managePath", "affectedPassengerCount", "ticketVersion", "updatedById"
     ];
 
     [Fact]
@@ -55,6 +58,33 @@ public sealed class PublicApiTests
         var roomKpi = dashboardJson.GetProperty("kpis").EnumerateArray().Single(x => x.GetProperty("key").GetString() == "roomsConfirmed");
         Assert.Equal(0, roomKpi.GetProperty("value").GetInt32());
         Assert.Single(dashboardJson.GetProperty("alerts").EnumerateArray(), x => x.GetString() == "Transfer grupal pendiente");
+    }
+
+    [Fact]
+    public async Task Public_and_private_dashboards_share_progress_and_operational_counts()
+    {
+        await using var factory = new TravelControlWebFactory();
+        using var client = factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+            { HandleCookies = true, BaseAddress = new Uri("https://localhost") });
+        var ct = TestContext.Current.CancellationToken;
+        await AuthenticateAsync(client, ct);
+        var publicDashboard = await client.GetFromJsonAsync<JsonElement>("/api/public/dashboard", ct);
+        var privateResponse = await client.GetAsync("/api/dashboard", ct);
+        Assert.True(privateResponse.IsSuccessStatusCode, await privateResponse.Content.ReadAsStringAsync(ct));
+        var privateDashboard = JsonDocument.Parse(await privateResponse.Content.ReadAsStringAsync(ct)).RootElement;
+        Assert.Equal(publicDashboard.GetProperty("progressPercent").GetInt32(),
+            privateDashboard.GetProperty("tripReadiness").GetProperty("progressPercent").GetInt32());
+        foreach (var key in new[] { "accommodationPassengers", "roomsConfirmed", "flights", "baggage", "documentation", "passports" })
+        {
+            var publicKpi = publicDashboard.GetProperty("kpis").EnumerateArray().Single(x => x.GetProperty("key").GetString() == key);
+            var privateKpi = privateDashboard.GetProperty("kpis").EnumerateArray().Single(x => x.GetProperty("key").GetString() == key);
+            Assert.Equal(publicKpi.GetProperty("value").GetInt32(), privateKpi.GetProperty("value").GetInt32());
+            Assert.Equal(publicKpi.GetProperty("total").GetInt32(), privateKpi.GetProperty("total").GetInt32());
+        }
+        Assert.Equal(publicDashboard.GetProperty("missing").GetProperty("unresolvedRoomReservations").GetInt32(),
+            privateDashboard.GetProperty("roomsPending").GetInt32());
+        Assert.Equal(publicDashboard.GetProperty("missing").GetProperty("specificPropertiesPending").GetInt32(),
+            privateDashboard.GetProperty("specificPropertiesPending").GetInt32());
     }
 
     [Fact]
@@ -146,7 +176,7 @@ public sealed class PublicApiTests
         {
             DocumentType = DocumentType.Other, OriginalName = "fixture.pdf", StoredName = "fixture.pdf",
             MimeType = "application/pdf", Size = 10, SecurePath = "fixture.pdf", Sha256 = "UPDATED-HASH", UploadedById = Guid.NewGuid(),
-            Links = [new AttachmentLink { PassengerId = passenger.Id, CreatedByUserId = Guid.NewGuid() }]
+            Links = [new AttachmentLink { PassengerId = passenger.Id, EvidenceType = DocumentType.Other, CreatedByUserId = Guid.NewGuid() }]
         });
         await db.SaveChangesAsync(ct);
         Assert.True((await service.GetDashboardAsync(ct)).UpdatedAt > previous);
@@ -174,6 +204,27 @@ public sealed class PublicApiTests
         db.Passengers.Add(passenger);
         await db.SaveChangesAsync(ct);
         return passenger.Id;
+    }
+
+    private static async Task AuthenticateAsync(HttpClient client, CancellationToken ct)
+    {
+        var csrfResponse = await client.GetAsync("/api/auth/csrf", ct);
+        Assert.True(csrfResponse.IsSuccessStatusCode, await csrfResponse.Content.ReadAsStringAsync(ct));
+        var csrf = JsonDocument.Parse(await csrfResponse.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("token").GetString()!;
+        using var setupRequest = new HttpRequestMessage(HttpMethod.Post, "/api/auth/setup")
+        {
+            Content = JsonContent.Create(new { email = Email, password = Password, displayName = "Administrador" })
+        };
+        setupRequest.Headers.Add("X-XSRF-TOKEN", csrf);
+        var setup = await client.SendAsync(setupRequest, ct);
+        Assert.Equal(HttpStatusCode.Created, setup.StatusCode);
+        using var loginRequest = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login")
+        {
+            Content = JsonContent.Create(new { email = Email, password = Password, rememberMe = false })
+        };
+        loginRequest.Headers.Add("X-XSRF-TOKEN", csrf);
+        var login = await client.SendAsync(loginRequest, ct);
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
     }
 
     private static void AssertNoForbiddenKeys(JsonElement element)

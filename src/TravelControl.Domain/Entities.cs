@@ -147,6 +147,9 @@ public sealed class PassengerFlight
     public string? ElectronicTicketNumber { get; set; }
     public VerificationStatus TicketStatus { get; set; } = VerificationStatus.ToVerify;
     public string? Notes { get; set; }
+    public long Version { get; set; } = 1;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public Guid? UpdatedById { get; set; }
 }
 
 public sealed class BaggageEntitlement : Entity
@@ -191,6 +194,7 @@ public sealed class AttachmentLink : Entity
 {
     public Guid AttachmentId { get; set; }
     public Attachment Attachment { get; set; } = null!;
+    public DocumentType EvidenceType { get; set; }
     public Guid? PassengerId { get; set; }
     public Passenger? Passenger { get; set; }
     public Guid? RoomReservationId { get; set; }

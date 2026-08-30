@@ -100,6 +100,76 @@ public sealed class IdentificationImportTests
         Assert.Equal(2, await fixture.Db.Passengers.CountAsync(fixture.Ct));
     }
 
+    [Fact]
+    public async Task Named_sheet_priority_scoring_ties_and_explicit_selection_are_deterministic()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddPassengerAsync("Persona Uno");
+        using var workbook = new XLWorkbook();
+        AddSheet(workbook, "Resumen", ["Nombre"], ["Persona Uno"]);
+        AddSheet(workbook, "Pasaportes", ["Nombre", "Pasaporte"], ["Persona Uno", "PASS-1"]);
+        AddSheet(workbook, "Identificación", ["Nombre", "Pasaporte", "Nacionalidad"], ["Persona Uno", "PASS-2", "Ficticia"]);
+        var prioritized = await fixture.Service.PreviewAsync(new MemoryStream(Bytes(workbook)), "sheets.xlsx", false, fixture.Ct);
+        Assert.Equal("Identificación", prioritized.SelectedSheet);
+
+        using var namedWorkbook = new XLWorkbook();
+        AddSheet(namedWorkbook, "Documentos", ["Nombre", "Pasaporte", "Nacionalidad"], ["Persona Uno", "PASS-D", "Ficticia"]);
+        AddSheet(namedWorkbook, "Pasaportes", ["Nombre", "Pasaporte"], ["Persona Uno", "PASS-P"]);
+        var named = await fixture.Service.PreviewAsync(new MemoryStream(Bytes(namedWorkbook)), "named.xlsx", false, fixture.Ct);
+        Assert.Equal("Pasaportes", named.SelectedSheet);
+
+        using var scoredWorkbook = new XLWorkbook();
+        AddSheet(scoredWorkbook, "Datos mínimos", ["Nombre", "Pasaporte"], ["Persona Uno", "PASS-M"]);
+        AddSheet(scoredWorkbook, "Ficha completa", ["Nombre", "Pasaporte", "Fecha de nacimiento", "Nacionalidad", "Vencimiento"],
+            ["Persona Uno", "PASS-C", new DateTime(1990, 1, 1), "Ficticia", new DateTime(2030, 1, 1)]);
+        var scored = await fixture.Service.PreviewAsync(new MemoryStream(Bytes(scoredWorkbook)), "scored.xlsx", false, fixture.Ct);
+        Assert.Equal("Ficha completa", scored.SelectedSheet);
+
+        using var tiedWorkbook = new XLWorkbook();
+        AddSheet(tiedWorkbook, "Hoja A", ["Nombre", "Pasaporte"], ["Persona Uno", "PASS-A"]);
+        AddSheet(tiedWorkbook, "Hoja B", ["Nombre", "Pasaporte"], ["Persona Uno", "PASS-B"]);
+        var tiedBytes = Bytes(tiedWorkbook);
+        var tied = await fixture.Service.PreviewAsync(new MemoryStream(tiedBytes), "tie.xlsx", false, fixture.Ct);
+        Assert.False(tied.CanCommit);
+        Assert.Equal(["Hoja A", "Hoja B"], tied.CandidateSheets);
+        var explicitSheet = await fixture.Service.PreviewAsync(new MemoryStream(tiedBytes), "tie.xlsx", false, fixture.Ct, "Hoja B");
+        Assert.True(explicitSheet.CanCommit);
+        Assert.Equal("Hoja B", explicitSheet.SelectedSheet);
+    }
+
+    [Fact]
+    public async Task Temporal_inconsistencies_block_and_expired_passports_remain_warnings()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddPassengerAsync("Fecha Futura");
+        await fixture.AddPassengerAsync("Edad Imposible");
+        await fixture.AddPassengerAsync("Vencimiento Antiguo");
+        var invalid = Workbook(["Nombre", "Fecha de nacimiento", "Vencimiento"],
+            ["Fecha Futura", new DateTime(2027, 1, 1), new DateTime(2030, 1, 1)],
+            ["Edad Imposible", new DateTime(1800, 1, 1), new DateTime(2030, 1, 1)],
+            ["Vencimiento Antiguo", new DateTime(2000, 1, 1), new DateTime(1999, 1, 1)]);
+        var blocked = await fixture.Service.PreviewAsync(new MemoryStream(invalid), "temporal.xlsx", false, fixture.Ct);
+        Assert.False(blocked.CanCommit);
+        Assert.Equal(3, blocked.TemporallyInconsistentRows);
+
+        var expired = Workbook(["Nombre", "Fecha de nacimiento", "Vencimiento"],
+            ["Vencimiento Antiguo", new DateTime(2000, 1, 1), new DateTime(2025, 1, 1)]);
+        var warning = await fixture.Service.PreviewAsync(new MemoryStream(expired), "expired.xlsx", false, fixture.Ct);
+        Assert.True(warning.CanCommit);
+        Assert.Equal(1, warning.ExpiredPassports);
+        Assert.Contains(warning.Issues, x => x.Level == "Advertencia" && x.Message.Contains("preventivo", StringComparison.OrdinalIgnoreCase));
+
+        await fixture.AddPassengerAsync("Vence antes del regreso");
+        await fixture.AddPassengerAsync("Vence en umbral");
+        var preventive = Workbook(["Nombre", "Fecha de nacimiento", "Vencimiento"],
+            ["Vence antes del regreso", new DateTime(1990, 1, 1), new DateTime(2026, 9, 10)],
+            ["Vence en umbral", new DateTime(1990, 1, 1), new DateTime(2027, 1, 1)]);
+        var preventiveWarnings = await fixture.Service.PreviewAsync(new MemoryStream(preventive), "preventive.xlsx", false, fixture.Ct);
+        Assert.True(preventiveWarnings.CanCommit);
+        Assert.Equal(1, preventiveWarnings.ExpiriesBeforeReturn);
+        Assert.Equal(1, preventiveWarnings.ExpiriesWithinWarningThreshold);
+    }
+
     private static byte[] Workbook(string[] headers, params object[][] rows)
     {
         using var workbook = new XLWorkbook();
@@ -111,6 +181,19 @@ public sealed class IdentificationImportTests
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
         return stream.ToArray();
+    }
+
+    private static void AddSheet(XLWorkbook workbook, string name, string[] headers, params object[][] rows)
+    {
+        var sheet = workbook.AddWorksheet(name);
+        for (var column = 0; column < headers.Length; column++) sheet.Cell(1, column + 1).Value = headers[column];
+        for (var row = 0; row < rows.Length; row++)
+            for (var column = 0; column < rows[row].Length; column++)
+                sheet.Cell(row + 2, column + 1).Value = XLCellValue.FromObject(rows[row][column]);
+    }
+    private static byte[] Bytes(XLWorkbook workbook)
+    {
+        using var stream = new MemoryStream(); workbook.SaveAs(stream); return stream.ToArray();
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -134,7 +217,8 @@ public sealed class IdentificationImportTests
             await connection.OpenAsync(TestContext.Current.CancellationToken);
             var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
             await db.Database.EnsureCreatedAsync(TestContext.Current.CancellationToken);
-            db.Trips.Add(new Trip { Name = "Viaje ficticio", Destination = "Destino", IsActive = true });
+            db.Trips.Add(new Trip { Name = "Viaje ficticio", Destination = "Destino", IsActive = true,
+                EndDate = new DateOnly(2026, 9, 15), PassportWarningDays = 180 });
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             return new Fixture(connection, db);
         }

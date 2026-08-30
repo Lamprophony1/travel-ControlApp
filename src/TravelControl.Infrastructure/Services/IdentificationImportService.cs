@@ -34,7 +34,13 @@ public sealed record IdentificationImportResult(
     int WillOverwrite,
     bool CanCommit,
     IReadOnlyList<IdentificationImportIssue> Issues,
-    Guid? ImportRunId = null);
+    Guid? ImportRunId = null,
+    string? SelectedSheet = null,
+    IReadOnlyList<string>? CandidateSheets = null,
+    int ExpiredPassports = 0,
+    int ExpiriesBeforeReturn = 0,
+    int ExpiriesWithinWarningThreshold = 0,
+    int TemporallyInconsistentRows = 0);
 
 public sealed record IdentificationQuality(
     int TotalPassengers,
@@ -55,7 +61,9 @@ internal sealed record IdentificationRow(
     string? Nationality,
     DateOnly? PassportExpiry,
     bool BirthDateInvalid,
-    bool PassportExpiryInvalid);
+    bool PassportExpiryInvalid,
+    bool BirthDateAmbiguous,
+    bool PassportExpiryAmbiguous);
 
 public sealed class IdentificationImportService(AppDbContext db, ILogger<IdentificationImportService> logger)
 {
@@ -69,9 +77,10 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
         Stream stream,
         string fileName,
         bool overwriteExisting,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? sheetName = null)
     {
-        var parsed = await ParseAsync(stream, fileName, overwriteExisting, ct);
+        var parsed = await ParseAsync(stream, fileName, overwriteExisting, sheetName, ct);
         return parsed.Result;
     }
 
@@ -82,11 +91,12 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
         bool overwriteConfirmed,
         Guid userId,
         string? userName,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? sheetName = null)
     {
         if (overwriteExisting && !overwriteConfirmed)
             throw new InvalidOperationException("Confirmá expresamente la sobrescritura de valores existentes.");
-        var parsed = await ParseAsync(stream, fileName, overwriteExisting, ct);
+        var parsed = await ParseAsync(stream, fileName, overwriteExisting, sheetName, ct);
         if (!parsed.Result.CanCommit) return parsed.Result;
 
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
@@ -214,7 +224,8 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
             duplicatePassports);
     }
 
-    private async Task<ParsedIdentification> ParseAsync(Stream stream, string fileName, bool overwriteExisting, CancellationToken ct)
+    private async Task<ParsedIdentification> ParseAsync(Stream stream, string fileName, bool overwriteExisting,
+        string? sheetName, CancellationToken ct)
     {
         if (!string.Equals(Path.GetExtension(fileName), ".xlsx", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Solo se permiten archivos XLSX.");
@@ -225,19 +236,23 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
             throw new InvalidOperationException("El contenido no es un XLSX válido.");
 
         using var workbook = new XLWorkbook(new MemoryStream(bytes));
-        var sheetAndHeader = workbook.Worksheets
-            .Select(sheet => (Sheet: sheet, Header: FindHeader(sheet)))
-            .FirstOrDefault(x => x.Header.HasValue);
+        var candidates = workbook.Worksheets.Select(sheet => new
+            { Sheet = sheet, Header = FindHeader(sheet), Score = SheetScore(sheet) })
+            .Where(x => x.Header.HasValue).ToArray();
+        var candidateNames = candidates.Select(x => x.Sheet.Name).ToArray();
+        var selected = SelectSheet(candidates.Select(x => (x.Sheet, Header: x.Header!.Value, x.Score)).ToArray(), sheetName);
         var issues = new List<IdentificationImportIssue>();
-        if (sheetAndHeader.Sheet is null || sheetAndHeader.Header is null)
+        if (selected is null)
         {
             issues.Add(new("Error", null, null, "No se encontró una columna compatible de nombre."));
             return new([], new Dictionary<string, Passenger>(), Convert.ToHexString(SHA256.HashData(bytes)),
-                BuildResult([], 0, 0, 0, 0, 0, 0, 0, 0, 1, issues, overwriteExisting));
+                BuildResult([], 0, 0, 0, 0, 0, 0, 0, 0, 1, issues, overwriteExisting)
+                    with { CandidateSheets = candidateNames });
         }
 
-        var rows = ParseRows(sheetAndHeader.Sheet, sheetAndHeader.Header.Value);
-        var tripId = await db.Trips.AsNoTracking().Where(x => x.IsActive).Select(x => x.Id).SingleAsync(ct);
+        var rows = ParseRows(selected.Value.Sheet, selected.Value.Header);
+        var trip = await db.Trips.AsNoTracking().SingleAsync(x => x.IsActive, ct);
+        var tripId = trip.Id;
         var passengerList = await db.Passengers.Where(x => x.TripId == tripId).ToListAsync(ct);
         var passengers = passengerList.ToDictionary(x => x.NormalizedName);
         var duplicateNames = rows.GroupBy(x => x.NormalizedName).Where(x => x.Count() > 1).ToArray();
@@ -249,6 +264,27 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
             issues.Add(new("Error", row.Row, "BirthDate", "La fecha de nacimiento no es válida."));
         foreach (var row in rows.Where(x => x.PassportExpiryInvalid))
             issues.Add(new("Error", row.Row, "PassportExpiry", "La fecha de vencimiento no es válida."));
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        foreach (var row in rows)
+        {
+            if (row.BirthDate > today)
+                issues.Add(new("Error", row.Row, "BirthDate", "La fecha de nacimiento no puede ser futura."));
+            if (row.BirthDate < today.AddYears(-120))
+                issues.Add(new("Error", row.Row, "BirthDate", "La edad calculada supera 120 años."));
+            if (row.BirthDate.HasValue && row.PassportExpiry.HasValue && row.PassportExpiry < row.BirthDate)
+                issues.Add(new("Error", row.Row, "PassportExpiry", "El vencimiento no puede ser anterior al nacimiento."));
+            if (row.PassportExpiry < today)
+                issues.Add(new("Advertencia", row.Row, "PassportExpiry", "Pasaporte vencido. Control preventivo interno; verificar requisitos migratorios oficiales."));
+            if (row.PassportExpiry >= today && row.PassportExpiry < trip.EndDate)
+                issues.Add(new("Advertencia", row.Row, "PassportExpiry", "El pasaporte vence antes del regreso. Control preventivo interno; verificar requisitos migratorios oficiales."));
+            else if (row.PassportExpiry >= trip.EndDate && row.PassportExpiry <= trip.EndDate.AddDays(trip.PassportWarningDays))
+                issues.Add(new("Advertencia", row.Row, "PassportExpiry", "El vencimiento está dentro del umbral preventivo. Control preventivo interno; verificar requisitos migratorios oficiales."));
+            if (row.BirthDateAmbiguous)
+                issues.Add(new("Advertencia", row.Row, "BirthDate", "Formato de fecha ambiguo resuelto con cultura es-PY."));
+            if (row.PassportExpiryAmbiguous)
+                issues.Add(new("Advertencia", row.Row, "PassportExpiry", "Formato de fecha ambiguo resuelto con cultura es-PY."));
+        }
 
         var duplicatePassportRows = rows.Where(x => !string.IsNullOrWhiteSpace(x.NormalizedPassport))
             .GroupBy(x => x.NormalizedPassport)
@@ -293,7 +329,17 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
         var invalidDates = issues.Count(x => x.Field is "BirthDate" or "PassportExpiry" && x.Level == "Error");
         var blocking = issues.Count(x => x.Level == "Error");
         var result = BuildResult(rows, matched, unmatched, duplicateNames.Sum(x => x.Count()), unchanged, missingFields, conflicts,
-            invalidDates, duplicatePassports, blocking, issues, overwriteExisting, willUpdate, willOverwrite);
+            invalidDates, duplicatePassports, blocking, issues, overwriteExisting, willUpdate, willOverwrite) with
+        {
+            SelectedSheet = selected.Value.Sheet.Name,
+            CandidateSheets = candidateNames,
+            ExpiredPassports = rows.Count(x => x.PassportExpiry < today),
+            ExpiriesBeforeReturn = rows.Count(x => x.PassportExpiry >= today && x.PassportExpiry < trip.EndDate),
+            ExpiriesWithinWarningThreshold = rows.Count(x => x.PassportExpiry >= trip.EndDate
+                && x.PassportExpiry <= trip.EndDate.AddDays(trip.PassportWarningDays)),
+            TemporallyInconsistentRows = issues.Where(x => x.Level == "Error" && x.Field is "BirthDate" or "PassportExpiry")
+                .Select(x => x.Row).Where(x => x.HasValue).Distinct().Count()
+        };
         return new(rows, passengers, Convert.ToHexString(SHA256.HashData(bytes)), result);
     }
 
@@ -339,8 +385,8 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
             var name = Value(row, headers, NameHeaders);
             if (string.IsNullOrWhiteSpace(name)) continue;
             var passport = Value(row, headers, PassportHeaders);
-            var (birthDate, birthPresent, birthInvalid) = Date(row, headers, BirthHeaders);
-            var (expiry, expiryPresent, expiryInvalid) = Date(row, headers, ExpiryHeaders);
+            var (birthDate, birthPresent, birthInvalid, birthAmbiguous) = Date(row, headers, BirthHeaders);
+            var (expiry, expiryPresent, expiryInvalid, expiryAmbiguous) = Date(row, headers, ExpiryHeaders);
             rows.Add(new(
                 row.RowNumber(),
                 name.Trim(),
@@ -351,9 +397,47 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
                 Clean(Value(row, headers, NationalityHeaders)),
                 expiry,
                 birthPresent && birthInvalid,
-                expiryPresent && expiryInvalid));
+                expiryPresent && expiryInvalid,
+                birthAmbiguous,
+                expiryAmbiguous));
         }
         return rows;
+    }
+
+    private static (IXLWorksheet Sheet, int Header, int Score)? SelectSheet(
+        IReadOnlyList<(IXLWorksheet Sheet, int Header, int Score)> candidates,
+        string? requestedName)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedName))
+            return candidates.FirstOrDefault(x => string.Equals(x.Sheet.Name.Trim(), requestedName.Trim(), StringComparison.OrdinalIgnoreCase)) is var requested
+                && requested.Sheet is not null ? requested : null;
+        static int Priority(string name)
+        {
+            var normalized = TextNormalizer.Normalize(name);
+            if (normalized.StartsWith("IDENTIFICACI", StringComparison.Ordinal)) return 0;
+            if (normalized == "PASAPORTES") return 1;
+            if (normalized == "DOCUMENTOS") return 2;
+            if (normalized == "DATOS PASAJEROS") return 3;
+            if (normalized == "DATOS DE PASAJEROS") return 4;
+            return int.MaxValue;
+        }
+        var prioritized = candidates.OrderBy(x => Priority(x.Sheet.Name)).FirstOrDefault();
+        if (prioritized.Sheet is not null && Priority(prioritized.Sheet.Name) < int.MaxValue) return prioritized;
+        if (candidates.Count == 0) return null;
+        var maximum = candidates.Max(x => x.Score);
+        var best = candidates.Where(x => x.Score == maximum).ToArray();
+        return best.Length == 1 ? best[0] : null;
+    }
+
+    private static int SheetScore(IXLWorksheet sheet)
+    {
+        var header = FindHeader(sheet);
+        if (!header.HasValue) return 0;
+        var values = sheet.Row(header.Value).CellsUsed().Select(x => TextNormalizer.Normalize(x.GetFormattedString())).ToHashSet();
+        static bool Has(IReadOnlySet<string> values, IEnumerable<string> aliases) => aliases.Any(x => values.Contains(TextNormalizer.Normalize(x)));
+        return (Has(values, NameHeaders) ? 1 : 0) + (Has(values, PassportHeaders) ? 1 : 0)
+            + (Has(values, BirthHeaders) ? 1 : 0) + (Has(values, NationalityHeaders) ? 1 : 0)
+            + (Has(values, ExpiryHeaders) ? 1 : 0);
     }
 
     private static int? FindHeader(IXLWorksheet sheet)
@@ -377,7 +461,7 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
         return null;
     }
 
-    private static (DateOnly? Value, bool Present, bool Invalid) Date(
+    private static (DateOnly? Value, bool Present, bool Invalid, bool Ambiguous) Date(
         IXLRow row,
         IReadOnlyDictionary<string, int> headers,
         IEnumerable<string> aliases)
@@ -386,15 +470,20 @@ public sealed class IdentificationImportService(AppDbContext db, ILogger<Identif
         {
             if (!headers.TryGetValue(TextNormalizer.Normalize(alias), out var column)) continue;
             var cell = row.Cell(column);
-            if (cell.IsEmpty()) return (null, false, false);
-            if (cell.TryGetValue<DateTime>(out var dateTime)) return (DateOnly.FromDateTime(dateTime), true, false);
+            if (cell.IsEmpty()) return (null, false, false, false);
+            if (cell.TryGetValue<DateTime>(out var dateTime)) return (DateOnly.FromDateTime(dateTime), true, false, false);
             var text = cell.GetFormattedString().Trim();
-            if (DateOnly.TryParse(text, CultureInfo.GetCultureInfo("es-PY"), DateTimeStyles.None, out var localized)
-                || DateOnly.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out localized))
-                return (localized, true, false);
-            return (null, true, true);
+            if (DateOnly.TryParse(text, CultureInfo.GetCultureInfo("es-PY"), DateTimeStyles.None, out var localized))
+            {
+                var ambiguous = DateOnly.TryParse(text, CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.None, out var alternate)
+                    && alternate != localized;
+                return (localized, true, false, ambiguous);
+            }
+            if (DateOnly.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out localized))
+                return (localized, true, false, false);
+            return (null, true, true, false);
         }
-        return (null, false, false);
+        return (null, false, false, false);
     }
 
     private static void Compare<T>(

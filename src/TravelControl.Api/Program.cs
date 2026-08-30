@@ -70,10 +70,11 @@ builder.Services.AddAntiforgery(options =>
 });
 builder.Services.AddRateLimiter(options =>
 {
+    var authPermitLimit = builder.Configuration.GetValue<int?>("RateLimiting:AuthPermitLimit") ?? 8;
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
-        { PermitLimit = 8, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+        { PermitLimit = authPermitLimit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("public-read", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
         { PermitLimit = 120, Window = TimeSpan.FromMinutes(5), QueueLimit = 0, AutoReplenishment = true }));
@@ -84,6 +85,7 @@ builder.Services.AddScoped<IdentificationImportService>();
 builder.Services.AddScoped<ExcelExportService>();
 builder.Services.AddScoped<EvidenceResolver>();
 builder.Services.AddScoped<PassengerQueryService>();
+builder.Services.AddScoped<TripReadinessService>();
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<PublicReadService>();
 builder.Services.AddScoped<AttachmentStorage>();

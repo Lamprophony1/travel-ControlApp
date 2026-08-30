@@ -46,6 +46,9 @@ public sealed class MutationIntegrityTests
             var added = Assert.Single(links, x => x.PassengerId == addedPassengerId);
             Assert.Null(added.ElectronicTicketNumber);
             Assert.Equal(VerificationStatus.ToVerify, added.TicketStatus);
+            Assert.Equal(1, added.Version);
+            Assert.Equal(VerificationStatus.InProgress, await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+                .FlightBookings.Where(x => x.Id == fixture.FlightId).Select(x => x.Status).SingleAsync(ct));
         }
         Assert.Equal(HttpStatusCode.Conflict, (await SendJsonAsync(client, HttpMethod.Put, $"/api/flights/{fixture.FlightId}", request, csrf)).StatusCode);
 
@@ -67,10 +70,11 @@ public sealed class MutationIntegrityTests
         var ct = TestContext.Current.CancellationToken;
         var csrf = await AuthenticateAsync(client, ct);
         var fixture = await SeedBaggageFixtureAsync(factory.Services, ct);
+        var ticketVersion = await CurrentTicketVersionAsync(factory.Services, fixture.FlightId, fixture.EligiblePassengerId, ct);
 
         var incompleteTicket = await SendJsonAsync(client, HttpMethod.Put,
             $"/api/flights/{fixture.FlightId}/passengers/{fixture.EligiblePassengerId}/ticket",
-            new { electronicTicketNumber = "", status = "Confirmed", notes = (string?)null }, csrf);
+            new { electronicTicketNumber = "", status = "Confirmed", notes = (string?)null, version = ticketVersion }, csrf);
         Assert.Equal(HttpStatusCode.BadRequest, incompleteTicket.StatusCode);
         Assert.Contains("ticket electrónico", await incompleteTicket.Content.ReadAsStringAsync(ct), StringComparison.OrdinalIgnoreCase);
 
@@ -115,6 +119,37 @@ public sealed class MutationIntegrityTests
         await using var scope = factory.Services.CreateAsyncScope();
         Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<AppDbContext>().BaggageEntitlements
             .CountAsync(x => x.PassengerId == fixture.EligiblePassengerId && x.FlightBookingId == fixture.FlightId, ct));
+    }
+
+    [Fact]
+    public async Task Ticket_updates_use_optimistic_concurrency_mask_audit_values_and_recalculate_pnr_status()
+    {
+        await using var factory = new TravelControlWebFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true, BaseAddress = new Uri("https://localhost") });
+        var ct = TestContext.Current.CancellationToken;
+        var csrf = await AuthenticateAsync(client, ct);
+        var fixture = await SeedBaggageFixtureAsync(factory.Services, ct);
+        var version = await CurrentTicketVersionAsync(factory.Services, fixture.FlightId, fixture.PendingPassengerId, ct);
+        var payload = new { electronicTicketNumber = "SECRET-TICKET-987654", status = "Confirmed", notes = "fixture", version };
+
+        var flightsResponse = await client.GetAsync("/api/flights", ct);
+        Assert.True(flightsResponse.IsSuccessStatusCode, await flightsResponse.Content.ReadAsStringAsync(ct));
+        _ = JsonDocument.Parse(await flightsResponse.Content.ReadAsStringAsync(ct));
+
+        var first = await SendJsonAsync(client, HttpMethod.Put,
+            $"/api/flights/{fixture.FlightId}/passengers/{fixture.PendingPassengerId}/ticket", payload, csrf);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var stale = await SendJsonAsync(client, HttpMethod.Put,
+            $"/api/flights/{fixture.FlightId}/passengers/{fixture.PendingPassengerId}/ticket", payload, csrf);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Contains("Recarg", await stale.Content.ReadAsStringAsync(ct), StringComparison.OrdinalIgnoreCase);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(VerificationStatus.Confirmed, await db.FlightBookings.Where(x => x.Id == fixture.FlightId).Select(x => x.Status).SingleAsync(ct));
+        var audit = (await db.AuditLogs.Where(x => x.EntityName == "PassengerFlight").ToListAsync(ct)).OrderByDescending(x => x.At).First();
+        Assert.DoesNotContain("SECRET-TICKET-987654", audit.NewValue);
+        Assert.Contains("654", audit.NewValue);
     }
 
     [Fact]
@@ -164,11 +199,44 @@ public sealed class MutationIntegrityTests
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/attachments?passengerId={fixture.PassengerId}", ct)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/attachments/{fixture.AttachmentId}", ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await SendJsonAsync(client, HttpMethod.Post, $"/api/attachments/{fixture.AttachmentId}/links",
-            new { passengerId = fixture.PassengerId, roomId = (Guid?)null, flightId = (Guid?)null, baggageId = (Guid?)null }, viewerCsrf)).StatusCode);
+            new { passengerId = fixture.PassengerId, roomId = (Guid?)null, flightId = (Guid?)null, baggageId = (Guid?)null, evidenceType = "Other" }, viewerCsrf)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await SendJsonAsync(client, HttpMethod.Delete,
             $"/api/attachments/{fixture.AttachmentId}/links/{fixture.LinkId}", new { }, viewerCsrf)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await SendJsonAsync(client, HttpMethod.Delete,
-            $"/api/attachments/{fixture.AttachmentId}?confirm=true", new { }, viewerCsrf)).StatusCode);
+            $"/api/attachments/{fixture.AttachmentId}/links/{fixture.LinkId}?deleteIfOrphan=true", new { }, viewerCsrf)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Editor_can_unlink_but_only_administrator_can_request_physical_orphan_deletion()
+    {
+        await using var factory = new TravelControlWebFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true, BaseAddress = new Uri("https://localhost") });
+        var ct = TestContext.Current.CancellationToken;
+        var adminCsrf = await AuthenticateAsync(client, ct);
+        var createEditor = await SendJsonAsync(client, HttpMethod.Post, "/api/users", new
+        {
+            email = "editor@example.test", displayName = "Editor", role = "Editor", initialPassword = "Editor-only-Password!2026"
+        }, adminCsrf);
+        Assert.Equal(HttpStatusCode.Created, createEditor.StatusCode);
+        var fixture = await SeedAttachmentAsync(factory.Services, ct);
+        Assert.Equal(HttpStatusCode.NoContent, (await SendJsonAsync(client, HttpMethod.Post, "/api/auth/logout", new { }, adminCsrf)).StatusCode);
+        var anonymousCsrfResponse = await client.GetAsync("/api/auth/csrf", ct);
+        var anonymousCsrf = JsonDocument.Parse(await anonymousCsrfResponse.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("token").GetString()!;
+        Assert.Equal(HttpStatusCode.OK, (await SendJsonAsync(client, HttpMethod.Post, "/api/auth/login", new
+        {
+            email = "editor@example.test", password = "Editor-only-Password!2026", rememberMe = false
+        }, anonymousCsrf)).StatusCode);
+        var editorCsrfResponse = await client.GetAsync("/api/auth/csrf", ct);
+        var editorCsrf = JsonDocument.Parse(await editorCsrfResponse.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("token").GetString()!;
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await SendJsonAsync(client, HttpMethod.Delete,
+            $"/api/attachments/{fixture.AttachmentId}/links/{fixture.LinkId}?deleteIfOrphan=true", new { }, editorCsrf)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await SendJsonAsync(client, HttpMethod.Delete,
+            $"/api/attachments/{fixture.AttachmentId}/links/{fixture.LinkId}?deleteIfOrphan=false", new { }, editorCsrf)).StatusCode);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(1, await db.Attachments.CountAsync(x => x.Id == fixture.AttachmentId, ct));
+        Assert.Equal(0, await db.AttachmentLinks.CountAsync(x => x.AttachmentId == fixture.AttachmentId, ct));
     }
 
     private static async Task<string> AuthenticateAsync(HttpClient client, CancellationToken ct)
@@ -217,6 +285,14 @@ public sealed class MutationIntegrityTests
     {
         await using var scope = services.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<AppDbContext>().FlightBookings.Where(x => x.Id == flightId).Select(x => x.Version).SingleAsync(ct);
+    }
+
+    private static async Task<long> CurrentTicketVersionAsync(IServiceProvider services, Guid flightId, Guid passengerId, CancellationToken ct)
+    {
+        await using var scope = services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<AppDbContext>().PassengerFlights
+            .Where(x => x.FlightBookingId == flightId && x.PassengerId == passengerId)
+            .Select(x => x.Version).SingleAsync(ct);
     }
 
     private static object Baggage(Guid passengerId, Guid? flightId, int count, decimal weight, bool outbound, bool inbound, string? exception) => new

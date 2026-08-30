@@ -7,7 +7,25 @@ REQUIRE_BASELINE="${1:-}"
 
 [[ "$(realpath -m "${APP_ROOT}")" == "/opt/travel-control" ]] || { echo "Invalid app root" >&2; exit 1; }
 [[ -s "${DB_PATH}" ]] || { echo "Production database is missing or empty" >&2; exit 1; }
-for command in sqlite3 realpath; do command -v "${command}" >/dev/null; done
+for command in docker sqlite3 realpath; do command -v "${command}" >/dev/null; done
+
+CONTAINER_IMAGE="$(docker inspect --format '{{.Config.Image}}' travel-control 2>/dev/null || true)"
+PERMISSION_IMAGE="${TRAVELCONTROL_IMAGE:-${CONTAINER_IMAGE}}"
+[[ -n "${PERMISSION_IMAGE}" ]] || { echo "Cannot determine the Travel Control image" >&2; exit 1; }
+
+# The live application can recreate SQLite WAL/SHM files with its internal
+# group. Normalize all database files immediately before host-side checks so
+# the gc runner can inspect a live database without changing its owner UID.
+docker run --rm --network none --read-only --user 0:0 --entrypoint sh \
+  -v "${APP_ROOT}/data:/persistent" \
+  "${PERMISSION_IMAGE}" -c '
+    chown 10001:1001 /persistent
+    chmod 0770 /persistent
+    for name in travel-control.db travel-control.db-shm travel-control.db-wal; do
+      path="/persistent/${name}"
+      if [ -e "${path}" ]; then chown 10001:1001 "${path}"; chmod 0660 "${path}"; fi
+    done
+  '
 
 integrity="$(sqlite3 "${DB_PATH}" 'PRAGMA integrity_check;')"
 [[ "${integrity}" == "ok" ]] || { echo "SQLite integrity check failed" >&2; exit 1; }

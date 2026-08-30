@@ -36,7 +36,7 @@ public sealed class RoomUpdateValidator : AbstractValidator<RoomUpdateRequest>
         When(x => x.Status == VerificationStatus.Confirmed, () =>
         {
             RuleFor(x => x.CheckIn).NotNull(); RuleFor(x => x.CheckOut).NotNull();
-            RuleFor(x => x.RoomType).NotEmpty(); RuleFor(x => x.SourceReference).NotEmpty();
+            RuleFor(x => x.RoomType).NotEmpty();
         });
     }
 }

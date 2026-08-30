@@ -21,7 +21,10 @@ export interface PublicPassenger {
   id:string;name:string;operator?:string;roomCode?:string;hotel?:string;roomType?:string;checkIn?:string;checkOut?:string
   overallStatus:OverallStatus;progressPercent:number;requirements:PublicRequirement[];missing:string[];alerts:string[];transferConfirmed:boolean
 }
-export interface PublicMissingCounts {tickets:number;baggage:number;documentation:number;passports:number;rooms:number;properties:number;transfer:boolean}
+export interface PublicMissingCounts {
+  tickets:number;baggage:number;documentation:number;passports:number
+  passengersWithoutResolvedAccommodation:number;unresolvedRoomReservations:number;specificPropertiesPending:number;transfer:boolean
+}
 export interface PublicDashboard {
   tripName:string;destination:string;totalPassengers:number;readyPassengers:number;pendingPassengers:number;attentionPassengers:number
   progressPercent:number;transferConfirmed:boolean;kpis:{key:string;label:string;value:number;total:number;percent:number}[]

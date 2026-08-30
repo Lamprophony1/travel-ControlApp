@@ -80,7 +80,9 @@ builder.Services.AddRateLimiter(options =>
 });
 builder.Services.Configure<PublicReadOptions>(builder.Configuration.GetSection("PublicRead"));
 builder.Services.AddScoped<ExcelImportService>();
+builder.Services.AddScoped<IdentificationImportService>();
 builder.Services.AddScoped<ExcelExportService>();
+builder.Services.AddScoped<EvidenceResolver>();
 builder.Services.AddScoped<PassengerQueryService>();
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<PublicReadService>();

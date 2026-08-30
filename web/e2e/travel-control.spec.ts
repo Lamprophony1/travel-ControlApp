@@ -1,7 +1,7 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test'
 
 const email='admin@example.test',password='Test-only-Password!2026'
-const forbidden=['passportNumber','maskedPassport','birthDate','nationality','passportExpiry','phone','email','dietaryRestrictions','notes','nextAction','nextActionDueDate','pnr','electronicTicketNumber','sourceReference','operatorContact','attachments','followUps','audit','updatedBy','userName']
+const forbidden=['passportNumber','normalizedPassportNumber','maskedPassport','birthDate','nationality','passportExpiry','phone','email','dietaryRestrictions','notes','nextAction','nextActionDueDate','pnr','electronicTicketNumber','sourceReference','securePath','storedName','originalName','sha256','operatorContact','attachments','attachmentId','attachmentLinkId','followUps','audit','auditLog','updatedBy','userName']
 
 async function noOverflow(page:Page){expect(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth)).toBeFalsy()}
 async function enterManagement(page:Page){
@@ -67,11 +67,26 @@ test('gestión protegida y detalle público no expone datos sensibles',async({pa
   expect(privateResponse.status()).toBe(200)
   await page.goto('/gestion/pasajeros')
   await expect(page.getByRole('heading',{name:'Pasajeros'})).toBeVisible()
+  await expect(page.getByLabel('Pasaporte')).toBeVisible()
+  await expect(page.getByLabel('PNR')).toBeVisible()
+  await expect(page.getByLabel('Ticket')).toBeVisible()
+  const desktop=(page.viewportSize()?.width??0)>=1200
+  if(desktop){
+    await expect(page.getByTestId('passenger-desktop-table')).toBeVisible()
+    await expect(page.getByTestId('passenger-mobile-cards')).toBeHidden()
+  }else{
+    await expect(page.getByTestId('passenger-desktop-table')).toBeHidden()
+    await expect(page.getByTestId('passenger-mobile-cards')).toBeVisible()
+  }
   await noOverflow(page)
 })
 
 test('rutas privadas sin cookie devuelven 401',async({request})=>{
   expect((await request.get('/api/dashboard')).status()).toBe(401)
   expect((await request.get('/api/passengers?page=1&pageSize=1')).status()).toBe(401)
+  expect((await request.get('/api/rooms')).status()).toBe(401)
+  expect((await request.get('/api/flights')).status()).toBe(401)
+  expect((await request.get('/api/baggage')).status()).toBe(401)
+  expect((await request.get('/api/attachments')).status()).toBe(401)
   expect((await request.post('/api/baggage',{data:{}})).status()).toBe(401)
 })

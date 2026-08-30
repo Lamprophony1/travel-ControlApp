@@ -46,8 +46,9 @@ public sealed record FlightSegmentRequest(Guid? Id, SegmentType Type, string? Fl
     DateTimeOffset? DepartureAt, DateTimeOffset? ArrivalAt, string? OriginTimeZone, string? DestinationTimeZone, int Sequence);
 public sealed record PassengerTicketRequest(string ElectronicTicketNumber, VerificationStatus Status, string? Notes);
 public sealed record BaggageUpdateRequest(Guid PassengerId, Guid? FlightBookingId, VerificationStatus Status, int CheckedBagCount,
-    decimal WeightPerBagKg, bool AppliesOutbound, bool AppliesReturn, string? ExceptionReason, string? SourceReference, string? Notes);
+    decimal WeightPerBagKg, bool AppliesOutbound, bool AppliesReturn, string? ExceptionReason, string? SourceReference, string? Notes, long Version = 0);
 public sealed record GroupBaggageRequest(Guid FlightBookingId, IReadOnlyList<Guid>? PassengerIds, string? SourceReference, string? Notes);
 public sealed record TripTransferStatusRequest(bool IsConfirmed, string? Notes, long Version);
 public sealed record FollowUpRequest(Guid? TripId, Guid? PassengerId, Guid? RoomReservationId, string Title, string? Description,
     DateOnly? DueDate, FollowUpStatus Status, FollowUpPriority Priority, long Version = 0);
+public sealed record AttachmentLinkRequest(Guid? PassengerId, Guid? RoomId, Guid? FlightId, Guid? BaggageId);

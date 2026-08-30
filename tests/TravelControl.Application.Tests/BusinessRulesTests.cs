@@ -104,6 +104,26 @@ public sealed class BusinessRulesTests
         Assert.True(BusinessRules.RoomCanBeConfirmed(room, out _));
     }
 
+    [Fact]
+    public void Hotel_voucher_replaces_the_text_reference_for_an_otherwise_valid_room()
+    {
+        var passenger = Passenger();
+        var room = new RoomReservation
+        {
+            InternalCode = "ROOM-VOUCHER", OperatorId = Guid.NewGuid(), Status = VerificationStatus.Confirmed,
+            CheckIn = new DateOnly(2026, 9, 1), CheckOut = new DateOnly(2026, 9, 5),
+            RoomType = "Doble", ExpectedCapacity = 2
+        };
+        room.Passengers.Add(passenger);
+        passenger.RoomReservation = room;
+
+        Assert.False(BusinessRules.RoomCanBeConfirmed(room, false, out _));
+        Assert.True(BusinessRules.RoomCanBeConfirmed(room, true, out _));
+        var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1),
+            new PassengerEvidenceState(HasHotelVoucherEvidence: true));
+        Assert.Equal(VerificationStatus.Confirmed, state.Requirements.Single(x => x.Key == "room").Status);
+    }
+
     private static PassengerFlight ValidBooking(Passenger passenger, string ticket, VerificationStatus status)
     {
         var booking = new FlightBooking

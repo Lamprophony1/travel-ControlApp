@@ -24,6 +24,11 @@ top_travel_passengers="$(scalar "SELECT COUNT(*) FROM \"Passengers\" p JOIN \"Op
 bespoke_passengers="$(scalar "SELECT COUNT(*) FROM \"Passengers\" p JOIN \"Operators\" o ON o.\"Id\" = p.\"PrimaryOperatorId\" WHERE o.\"Name\" = 'Bespoke';")"
 top_travel_rooms="$(scalar "SELECT COUNT(*) FROM \"RoomReservations\" r JOIN \"Operators\" o ON o.\"Id\" = r.\"OperatorId\" WHERE o.\"Name\" = 'Top Travel';")"
 bespoke_rooms="$(scalar "SELECT COUNT(*) FROM \"RoomReservations\" r JOIN \"Operators\" o ON o.\"Id\" = r.\"OperatorId\" WHERE o.\"Name\" = 'Bespoke';")"
+baggage_duplicates="$(scalar 'SELECT COUNT(*) FROM (SELECT "PassengerId", "FlightBookingId" FROM "BaggageEntitlements" WHERE "FlightBookingId" IS NOT NULL GROUP BY "PassengerId", "FlightBookingId" HAVING COUNT(*) > 1);')"
+attachment_hash_duplicates="$(scalar 'SELECT COUNT(*) FROM (SELECT "Sha256" FROM "Attachments" GROUP BY "Sha256" HAVING COUNT(*) > 1);')"
+
+[[ "${baggage_duplicates}" == "0" ]] || { echo "Duplicate baggage records detected; migration stopped" >&2; exit 1; }
+[[ "${attachment_hash_duplicates}" == "0" ]] || { echo "Duplicate attachment hashes detected; migration stopped" >&2; exit 1; }
 
 if [[ "${REQUIRE_BASELINE}" == "--require-baseline" ]]; then
   [[ "${passengers}" == "46" ]] || { echo "Expected 46 passengers; found ${passengers}" >&2; exit 1; }
@@ -43,4 +48,6 @@ printf '%s\n' \
   "top_travel_passengers=${top_travel_passengers}" \
   "bespoke_passengers=${bespoke_passengers}" \
   "top_travel_rooms=${top_travel_rooms}" \
-  "bespoke_rooms=${bespoke_rooms}"
+  "bespoke_rooms=${bespoke_rooms}" \
+  "baggage_duplicates=${baggage_duplicates}" \
+  "attachment_hash_duplicates=${attachment_hash_duplicates}"

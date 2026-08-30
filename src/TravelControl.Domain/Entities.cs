@@ -184,6 +184,22 @@ public sealed class Attachment : Entity
     public Guid? RoomReservationId { get; set; }
     public Guid? FlightBookingId { get; set; }
     public Guid? BaggageEntitlementId { get; set; }
+    public ICollection<AttachmentLink> Links { get; set; } = [];
+}
+
+public sealed class AttachmentLink : Entity
+{
+    public Guid AttachmentId { get; set; }
+    public Attachment Attachment { get; set; } = null!;
+    public Guid? PassengerId { get; set; }
+    public Passenger? Passenger { get; set; }
+    public Guid? RoomReservationId { get; set; }
+    public RoomReservation? RoomReservation { get; set; }
+    public Guid? FlightBookingId { get; set; }
+    public FlightBooking? FlightBooking { get; set; }
+    public Guid? BaggageEntitlementId { get; set; }
+    public BaggageEntitlement? BaggageEntitlement { get; set; }
+    public Guid CreatedByUserId { get; set; }
 }
 
 public sealed class FollowUp : Entity
@@ -222,7 +238,10 @@ public sealed class ImportRun : Entity
     public required string FileName { get; set; }
     public required string Sha256 { get; set; }
     public bool DryRun { get; set; }
+    public string ImportType { get; set; } = "Master";
     public required string Status { get; set; }
+    public int Matched { get; set; }
+    public int Conflicts { get; set; }
     public int Added { get; set; }
     public int Updated { get; set; }
     public int Unchanged { get; set; }

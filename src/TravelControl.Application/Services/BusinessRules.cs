@@ -15,6 +15,10 @@ public sealed record TripComputedState(
     bool AllPassengersReady,
     bool TransferConfirmed,
     IReadOnlyList<string> CriticalAlerts);
+public sealed record PassengerEvidenceState(
+    bool HasAirTicketEvidence = false,
+    bool HasHotelVoucherEvidence = false,
+    bool HasBaggageEvidence = false);
 
 public static class BusinessRules
 {
@@ -43,7 +47,9 @@ public static class BusinessRules
         return PropertyPlaceholders.Any(x => normalized.Contains(x, StringComparison.Ordinal));
     }
 
-    public static bool RoomCanBeConfirmed(RoomReservation? room, out string[] missing)
+    public static bool RoomCanBeConfirmed(RoomReservation? room, out string[] missing) => RoomCanBeConfirmed(room, false, out missing);
+
+    public static bool RoomCanBeConfirmed(RoomReservation? room, bool hasHotelVoucherEvidence, out string[] missing)
     {
         var values = new List<string>();
         if (room is null) values.Add("habitación asignada");
@@ -53,7 +59,7 @@ public static class BusinessRules
             if (room.CheckIn is null) values.Add("check-in");
             if (room.CheckOut is null) values.Add("check-out");
             if (string.IsNullOrWhiteSpace(room.RoomType)) values.Add("tipo de habitación");
-            if (string.IsNullOrWhiteSpace(room.SourceReference)) values.Add("fuente o referencia");
+            if (string.IsNullOrWhiteSpace(room.SourceReference) && !hasHotelVoucherEvidence) values.Add("fuente, referencia o voucher de hotel");
             if (room.CheckIn.HasValue && room.CheckOut.HasValue && room.CheckIn >= room.CheckOut) values.Add("fechas válidas");
             if (room.Passengers.Count > room.ExpectedCapacity
                 && (!room.CapacityOverride || string.IsNullOrWhiteSpace(room.CapacityOverrideReason)))
@@ -98,7 +104,10 @@ public static class BusinessRules
         return values.Count == 0;
     }
 
-    public static PassengerComputedState CalculatePassenger(Passenger passenger, DateOnly today, bool hasAirTicketEvidence = false)
+    public static PassengerComputedState CalculatePassenger(Passenger passenger, DateOnly today, bool hasAirTicketEvidence = false) =>
+        CalculatePassenger(passenger, today, new PassengerEvidenceState(HasAirTicketEvidence: hasAirTicketEvidence));
+
+    public static PassengerComputedState CalculatePassenger(Passenger passenger, DateOnly today, PassengerEvidenceState evidence)
     {
         var returnDate = passenger.RoomReservation?.CheckOut ?? passenger.Trip.EndDate;
         var passport = CalculatePassport(passenger, returnDate, passenger.Trip.PassportWarningDays, today);
@@ -106,10 +115,10 @@ public static class BusinessRules
             ? VerificationStatus.Confirmed
             : passport == PassportStatus.Expired ? VerificationStatus.NotIncluded : VerificationStatus.ToVerify;
 
-        var room = EffectiveRoom(passenger.RoomReservation);
+        var room = EffectiveRoom(passenger.RoomReservation, evidence.HasHotelVoucherEvidence);
         var flight = EffectiveFlight(passenger.PassengerFlights);
         var baggage = EffectiveBaggage(passenger);
-        var documentationEvidence = hasAirTicketEvidence
+        var documentationEvidence = evidence.HasAirTicketEvidence
             || passenger.PassengerFlights.Any(x => !string.IsNullOrWhiteSpace(x.FlightBooking.SourceReference));
         var documentationDependencies = passenger.PassportReviewStatus == VerificationStatus.Confirmed
             && IsResolved(room) && IsResolved(flight) && documentationEvidence;
@@ -160,13 +169,13 @@ public static class BusinessRules
         && (requirement.Status != VerificationStatus.NotApplicable || !string.IsNullOrWhiteSpace(requirement.Reason));
     public static bool IsResolved(VerificationStatus status) => status is VerificationStatus.Confirmed or VerificationStatus.NotApplicable;
 
-    private static RequirementState EffectiveRoom(RoomReservation? room)
+    private static RequirementState EffectiveRoom(RoomReservation? room, bool hasHotelVoucherEvidence)
     {
         if (room?.Status == VerificationStatus.NotApplicable)
             return new("room", VerificationStatus.NotApplicable, "Habitación", FirstNonBlank(room.CapacityOverrideReason, room.Notes));
         if (room?.Status == VerificationStatus.Confirmed)
         {
-            var valid = RoomCanBeConfirmed(room, out var missing);
+            var valid = RoomCanBeConfirmed(room, hasHotelVoucherEvidence, out var missing);
             return new("room", valid ? VerificationStatus.Confirmed : VerificationStatus.ToVerify, "Habitación", JoinMissing(missing));
         }
         return new("room", room?.Status ?? VerificationStatus.ToVerify, "Habitación");

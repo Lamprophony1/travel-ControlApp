@@ -19,6 +19,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<PassengerFlight> PassengerFlights => Set<PassengerFlight>();
     public DbSet<BaggageEntitlement> BaggageEntitlements => Set<BaggageEntitlement>();
     public DbSet<Attachment> Attachments => Set<Attachment>();
+    public DbSet<AttachmentLink> AttachmentLinks => Set<AttachmentLink>();
     public DbSet<FollowUp> FollowUps => Set<FollowUp>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<ImportRun> ImportRuns => Set<ImportRun>();
@@ -66,8 +67,27 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
         });
         builder.Entity<FlightBooking>().HasIndex(x => new { x.TripId, x.Pnr });
         builder.Entity<PassengerFlight>().HasKey(x => new { x.PassengerId, x.FlightBookingId });
-        builder.Entity<BaggageEntitlement>().Ignore(x => x.Includes23Kg);
-        builder.Entity<Attachment>().HasIndex(x => x.Sha256);
+        builder.Entity<BaggageEntitlement>(entity =>
+        {
+            entity.Ignore(x => x.Includes23Kg);
+            entity.HasIndex(x => new { x.PassengerId, x.FlightBookingId }).IsUnique()
+                .HasFilter("FlightBookingId IS NOT NULL");
+        });
+        builder.Entity<Attachment>().HasIndex(x => x.Sha256).IsUnique();
+        builder.Entity<AttachmentLink>(entity =>
+        {
+            entity.HasOne(x => x.Attachment).WithMany(x => x.Links).HasForeignKey(x => x.AttachmentId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(x => x.Passenger).WithMany().HasForeignKey(x => x.PassengerId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(x => x.RoomReservation).WithMany().HasForeignKey(x => x.RoomReservationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(x => x.FlightBooking).WithMany().HasForeignKey(x => x.FlightBookingId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(x => x.BaggageEntitlement).WithMany().HasForeignKey(x => x.BaggageEntitlementId).OnDelete(DeleteBehavior.Cascade);
+            entity.ToTable(table => table.HasCheckConstraint("CK_AttachmentLink_ExactlyOneTarget",
+                "((PassengerId IS NOT NULL) + (RoomReservationId IS NOT NULL) + (FlightBookingId IS NOT NULL) + (BaggageEntitlementId IS NOT NULL)) = 1"));
+            entity.HasIndex(x => new { x.AttachmentId, x.PassengerId }).IsUnique().HasFilter("PassengerId IS NOT NULL");
+            entity.HasIndex(x => new { x.AttachmentId, x.RoomReservationId }).IsUnique().HasFilter("RoomReservationId IS NOT NULL");
+            entity.HasIndex(x => new { x.AttachmentId, x.FlightBookingId }).IsUnique().HasFilter("FlightBookingId IS NOT NULL");
+            entity.HasIndex(x => new { x.AttachmentId, x.BaggageEntitlementId }).IsUnique().HasFilter("BaggageEntitlementId IS NOT NULL");
+        });
         builder.Entity<ImportRun>().HasIndex(x => new { x.Sha256, x.DryRun });
         builder.Entity<FollowUp>().HasOne(x => x.Passenger).WithMany(x => x.FollowUps)
             .HasForeignKey(x => x.PassengerId).OnDelete(DeleteBehavior.Cascade);

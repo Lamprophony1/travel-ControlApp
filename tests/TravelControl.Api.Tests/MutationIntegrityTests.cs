@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TravelControl.Domain;
 using TravelControl.Infrastructure.Persistence;
@@ -85,7 +86,23 @@ public sealed class MutationIntegrityTests
 
         var justified = await SendJsonAsync(client, HttpMethod.Post, "/api/baggage",
             Baggage(fixture.EligiblePassengerId, fixture.FlightId, 1, 23, true, false, "Excepción ficticia documentada"), csrf);
-        Assert.Equal(HttpStatusCode.OK, justified.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, justified.StatusCode);
+        var createdBaggage = JsonDocument.Parse(await justified.Content.ReadAsStringAsync(ct)).RootElement;
+        var baggageId = createdBaggage.GetProperty("id").GetGuid();
+        var baggageVersion = createdBaggage.GetProperty("version").GetInt64();
+        var concurrentUpdate = new
+        {
+            passengerId = fixture.EligiblePassengerId, flightBookingId = fixture.FlightId, status = "Confirmed",
+            checkedBagCount = 1, weightPerBagKg = 23, appliesOutbound = true, appliesReturn = false,
+            exceptionReason = "Excepción ficticia actualizada", sourceReference = "Comprobante ficticio", notes = "Cambio A",
+            version = baggageVersion
+        };
+        Assert.Equal(HttpStatusCode.NoContent, (await SendJsonAsync(client, HttpMethod.Put, $"/api/baggage/{baggageId}", concurrentUpdate, csrf)).StatusCode);
+        var stale = await SendJsonAsync(client, HttpMethod.Put, $"/api/baggage/{baggageId}", concurrentUpdate, csrf);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Contains("recargá la vista", await stale.Content.ReadAsStringAsync(ct));
+        Assert.Equal(HttpStatusCode.Conflict, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage",
+            Baggage(fixture.EligiblePassengerId, fixture.FlightId, 1, 23, true, true, null), csrf)).StatusCode);
 
         var group = await SendJsonAsync(client, HttpMethod.Post, "/api/baggage/confirm-group",
             new { flightBookingId = fixture.FlightId, passengerIds = new[] { fixture.EligiblePassengerId, fixture.PendingPassengerId }, sourceReference = "Comprobante ficticio", notes = (string?)null }, csrf);
@@ -95,6 +112,9 @@ public sealed class MutationIntegrityTests
         var skipped = Assert.Single(result.GetProperty("skipped").EnumerateArray());
         Assert.Equal(fixture.PendingPassengerId, skipped.GetProperty("passengerId").GetGuid());
         Assert.Contains("Ticket todavía no confirmado", skipped.GetProperty("reason").GetString());
+        await using var scope = factory.Services.CreateAsyncScope();
+        Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<AppDbContext>().BaggageEntitlements
+            .CountAsync(x => x.PassengerId == fixture.EligiblePassengerId && x.FlightBookingId == fixture.FlightId, ct));
     }
 
     [Fact]
@@ -113,6 +133,42 @@ public sealed class MutationIntegrityTests
         await using var scope = factory.Services.CreateAsyncScope();
         var blocked = await scope.ServiceProvider.GetRequiredService<AppDbContext>().AuditLogs.CountAsync(x => x.Action == "ProtectionBlocked", ct);
         Assert.Equal(2, blocked);
+    }
+
+    [Fact]
+    public async Task Viewer_can_read_attachments_but_cannot_modify_links_or_files()
+    {
+        await using var factory = new TravelControlWebFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true, BaseAddress = new Uri("https://localhost") });
+        var ct = TestContext.Current.CancellationToken;
+        var adminCsrf = await AuthenticateAsync(client, ct);
+        var createViewer = await SendJsonAsync(client, HttpMethod.Post, "/api/users", new
+        {
+            email = "viewer@example.test", displayName = "Viewer", role = "Viewer", initialPassword = "Viewer-only-Password!2026"
+        }, adminCsrf);
+        Assert.Equal(HttpStatusCode.Created, createViewer.StatusCode);
+        var fixture = await SeedAttachmentAsync(factory.Services, ct);
+
+        var logout = await SendJsonAsync(client, HttpMethod.Post, "/api/auth/logout", new { }, adminCsrf);
+        Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
+        var anonymousCsrfResponse = await client.GetAsync("/api/auth/csrf", ct);
+        var anonymousCsrf = JsonDocument.Parse(await anonymousCsrfResponse.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("token").GetString()!;
+        var login = await SendJsonAsync(client, HttpMethod.Post, "/api/auth/login", new
+        {
+            email = "viewer@example.test", password = "Viewer-only-Password!2026", rememberMe = false
+        }, anonymousCsrf);
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        var viewerCsrfResponse = await client.GetAsync("/api/auth/csrf", ct);
+        var viewerCsrf = JsonDocument.Parse(await viewerCsrfResponse.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("token").GetString()!;
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/attachments?passengerId={fixture.PassengerId}", ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/attachments/{fixture.AttachmentId}", ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await SendJsonAsync(client, HttpMethod.Post, $"/api/attachments/{fixture.AttachmentId}/links",
+            new { passengerId = fixture.PassengerId, roomId = (Guid?)null, flightId = (Guid?)null, baggageId = (Guid?)null }, viewerCsrf)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await SendJsonAsync(client, HttpMethod.Delete,
+            $"/api/attachments/{fixture.AttachmentId}/links/{fixture.LinkId}", new { }, viewerCsrf)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await SendJsonAsync(client, HttpMethod.Delete,
+            $"/api/attachments/{fixture.AttachmentId}?confirm=true", new { }, viewerCsrf)).StatusCode);
     }
 
     private static async Task<string> AuthenticateAsync(HttpClient client, CancellationToken ct)
@@ -204,5 +260,26 @@ public sealed class MutationIntegrityTests
         db.FlightBookings.Add(booking);
         await db.SaveChangesAsync(ct);
         return (booking.Id, eligible.Id, pending.Id);
+    }
+
+    private static async Task<(Guid AttachmentId, Guid LinkId, Guid PassengerId)> SeedAttachmentAsync(IServiceProvider services, CancellationToken ct)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var tripId = await db.Trips.Where(x => x.IsActive).Select(x => x.Id).SingleAsync(ct);
+        var passenger = new Passenger { TripId = tripId, FullName = "Persona con adjunto", NormalizedName = "PERSONA CON ADJUNTO" };
+        var link = new AttachmentLink { Passenger = passenger, CreatedByUserId = Guid.NewGuid() };
+        var storageRoot = scope.ServiceProvider.GetRequiredService<IConfiguration>()["Storage:Root"]!;
+        var path = Path.Combine(storageRoot, $"{Guid.NewGuid():N}.pdf");
+        await File.WriteAllBytesAsync(path, "%PDF-1.7\nfixture"u8.ToArray(), ct);
+        var attachment = new Attachment
+        {
+            DocumentType = DocumentType.Other, OriginalName = "fixture.pdf", StoredName = Path.GetFileName(path),
+            MimeType = "application/pdf", Size = new FileInfo(path).Length, SecurePath = path, Sha256 = $"HASH-{Guid.NewGuid():N}",
+            UploadedById = Guid.NewGuid(), Links = [link]
+        };
+        db.Attachments.Add(attachment);
+        await db.SaveChangesAsync(ct);
+        return (attachment.Id, link.Id, passenger.Id);
     }
 }

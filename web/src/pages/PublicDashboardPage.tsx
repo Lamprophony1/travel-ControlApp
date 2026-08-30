@@ -6,12 +6,96 @@ import { api } from '../api'
 import { ErrorState, LoadingState } from '../components/LoadingState'
 import { StatusChip } from '../components/StatusChip'
 import type { PublicDashboard } from '../types'
+import { pendingPassengerDestination } from './publicDashboardNavigation'
 
-export function PublicDashboardPage(){const navigate=useNavigate();const q=useQuery({queryKey:['public','dashboard'],queryFn:()=>api<PublicDashboard>('/api/public/dashboard')});if(q.isLoading)return <LoadingState/>;if(q.error)return <ErrorState error={q.error} retry={()=>void q.refetch()}/>;const d=q.data!;const hasMissing=Object.entries(d.missing).some(([,v])=>typeof v==='boolean'?v:v>0)||d.alerts.length>0
-  const missing=[d.missing.tickets&&`${d.missing.tickets} tickets pendientes`,d.missing.baggage&&`${d.missing.baggage} maletas pendientes`,d.missing.documentation&&`${d.missing.documentation} documentaciones pendientes`,d.missing.passports&&`${d.missing.passports} pasaportes pendientes`,d.missing.rooms&&`${d.missing.rooms} habitaciones pendientes`,d.missing.properties&&`${d.missing.properties} propiedades de hotel pendientes`,d.missing.transfer&&'Transfer grupal pendiente'].filter(Boolean) as string[]
-  return <Stack spacing={4}><Box><Typography variant="h1">Estado del viaje</Typography><Typography color="text.secondary" mt={1}>{d.tripName} · {d.destination}</Typography></Box>{hasMissing?<Alert severity="error" variant="filled" action={<Button color="inherit" endIcon={<ArrowForwardIcon/>} onClick={()=>navigate('/pasajeros?requirement=flight')}>Ver pasajeros pendientes</Button>}><Typography fontWeight={900}>Todavía faltan entregables para cerrar el viaje</Typography><Typography>{missing.join(' · ')}</Typography></Alert>:<Alert severity="success" variant="filled"><Typography fontWeight={900}>El viaje está listo</Typography><Typography>Todos los pasajeros están listos, el transfer está confirmado y no hay alertas globales.</Typography></Alert>}
-    <Paper sx={{p:{xs:2.5,sm:3}}}><Stack direction={{xs:'column',sm:'row'}} justifyContent="space-between" gap={2}><Box><Typography variant="h2">Avance global</Typography><Typography variant="h3" fontWeight={900} mt={1}>{d.progressPercent}%</Typography></Box><StatusChip status={hasMissing?'Attention':'Ready'} size="medium"/></Stack><LinearProgress variant="determinate" value={d.progressPercent} color={hasMissing?'error':'success'} sx={{height:12,borderRadius:6,mt:2}}/></Paper>
-    <Box sx={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,210px),1fr))',gap:2}}>{d.kpis.map(k=><Card key={k.key}><CardActionArea onClick={()=>navigate(`/pasajeros${k.key==='ready'?'?overall=Ready':k.key==='attention'?'?overall=Attention':k.key==='pending'?'?overall=Pending':k.key==='flights'?'?requirement=flight':k.key==='baggage'?'?requirement=baggage':k.key==='documentation'?'?requirement=documentation':k.key==='passports'?'?requirement=passport':'?requirement=room'}`)}><CardContent><Typography color="text.secondary" fontWeight={750}>{k.label}</Typography><Typography variant="h3" fontWeight={900} my={1}>{k.value}<Typography component="span" fontSize="1rem" color="text.secondary"> / {k.total}</Typography></Typography><LinearProgress variant="determinate" value={k.percent} color={k.percent===100?'success':'secondary'}/></CardContent></CardActionArea></Card>)}</Box>
-    <Box sx={{display:'grid',gridTemplateColumns:{xs:'1fr',lg:'1.4fr 1fr'},gap:3}}><Paper sx={{p:3}}><Typography variant="h2" mb={2}>Cinco requisitos</Typography><Stack spacing={2}>{d.categories.map(c=><Box key={c.key}><Stack direction="row" justifyContent="space-between"><Typography fontWeight={800}>{c.label}</Typography><Typography>{c.resolvedPercent}% resuelto</Typography></Stack><LinearProgress variant="determinate" value={c.resolvedPercent} color={c.resolvedPercent===100?'success':'secondary'} sx={{height:9,borderRadius:5,my:.75}}/><Typography variant="caption" color="text.secondary">{c.confirmed} confirmados · {c.notApplicable} no aplica · {c.pending} por verificar · {c.inProgress} en gestión · {c.notIncluded} no incluidos</Typography></Box>)}</Stack></Paper><Paper sx={{p:3}}><Typography variant="h2" mb={2}>Por operadora</Typography><Stack spacing={2}>{d.operators.map(o=><Box key={o.name}><Typography fontWeight={850}>{o.name}</Typography><Typography color="text.secondary">{o.passengers} pasajeros · {o.rooms} habitaciones</Typography><Typography color="success.main">{o.resolvedRooms} requisitos de habitación resueltos</Typography></Box>)}</Stack></Paper></Box>
-    <Typography variant="caption" color="text.secondary">Última actualización general: {new Date(d.updatedAt).toLocaleString('es-PY')}. Control preventivo; verificar requisitos migratorios en fuentes oficiales.</Typography>
-  </Stack>}
+function kpiDestination(key: string) {
+  const destinations: Record<string, string> = {
+    ready: '/pasajeros?overall=Ready',
+    attention: '/pasajeros?overall=Attention',
+    pending: '/pasajeros?overall=Pending',
+    flights: '/pasajeros?requirement=flight',
+    baggage: '/pasajeros?requirement=baggage',
+    documentation: '/pasajeros?requirement=documentation',
+    passports: '/pasajeros?requirement=passport',
+    accommodationPassengers: '/pasajeros?requirement=room',
+    roomsConfirmed: '/pasajeros',
+  }
+  return destinations[key] ?? '/pasajeros'
+}
+
+export function PublicDashboardPage() {
+  const navigate = useNavigate()
+  const query = useQuery({ queryKey: ['public', 'dashboard'], queryFn: () => api<PublicDashboard>('/api/public/dashboard') })
+  if (query.isLoading) return <LoadingState />
+  if (query.error) return <ErrorState error={query.error} retry={() => void query.refetch()} />
+
+  const data = query.data!
+  const hasMissing = Object.values(data.missing).some(value => typeof value === 'boolean' ? value : value > 0) || data.alerts.length > 0
+  const missing = [
+    data.missing.tickets > 0 && `${data.missing.tickets} tickets pendientes`,
+    data.missing.baggage > 0 && `${data.missing.baggage} maletas pendientes`,
+    data.missing.documentation > 0 && `${data.missing.documentation} documentaciones pendientes`,
+    data.missing.passports > 0 && `${data.missing.passports} pasaportes pendientes`,
+    data.missing.passengersWithoutResolvedAccommodation > 0 && `${data.missing.passengersWithoutResolvedAccommodation} pasajeros con alojamiento pendiente`,
+    data.missing.unresolvedRoomReservations > 0 && `${data.missing.unresolvedRoomReservations} reservas de habitación pendientes`,
+    data.missing.specificPropertiesPending > 0 && `${data.missing.specificPropertiesPending} propiedades de hotel pendientes`,
+    data.missing.transfer && 'Transfer grupal pendiente',
+  ].filter(Boolean) as string[]
+
+  return <Stack spacing={4}>
+    <Box>
+      <Typography variant="h1">Estado del viaje</Typography>
+      <Typography color="text.secondary" mt={1}>{data.tripName} · {data.destination}</Typography>
+    </Box>
+
+    {hasMissing
+      ? <Alert severity="error" variant="filled" action={<Button color="inherit" endIcon={<ArrowForwardIcon />} onClick={() => navigate(pendingPassengerDestination(data))}>Ver pasajeros pendientes</Button>}>
+          <Typography fontWeight={900}>Todavía faltan entregables para cerrar el viaje</Typography>
+          <Typography>{missing.join(' · ')}</Typography>
+        </Alert>
+      : <Alert severity="success" variant="filled">
+          <Typography fontWeight={900}>El viaje está listo</Typography>
+          <Typography>Todos los pasajeros están listos, el transfer está confirmado y no hay alertas globales.</Typography>
+        </Alert>}
+
+    <Paper sx={{ p: { xs: 2.5, sm: 3 } }}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
+        <Box><Typography variant="h2">Avance global</Typography><Typography variant="h3" fontWeight={900} mt={1}>{data.progressPercent}%</Typography></Box>
+        <StatusChip status={hasMissing ? 'Attention' : 'Ready'} size="medium" />
+      </Stack>
+      <LinearProgress variant="determinate" value={data.progressPercent} color={hasMissing ? 'error' : 'success'} sx={{ height: 12, borderRadius: 6, mt: 2 }} />
+    </Paper>
+
+    <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,210px),1fr))', gap: 2 }}>
+      {data.kpis.map(kpi => <Card key={kpi.key}>
+        <CardActionArea onClick={() => navigate(kpiDestination(kpi.key))} sx={{ height: '100%', minHeight: 44 }}>
+          <CardContent>
+            <Typography color="text.secondary" fontWeight={750}>{kpi.label}</Typography>
+            <Typography variant="h3" fontWeight={900} my={1}>{kpi.value}<Typography component="span" fontSize="1rem" color="text.secondary"> / {kpi.total}</Typography></Typography>
+            <LinearProgress variant="determinate" value={kpi.percent} color={kpi.percent === 100 ? 'success' : 'secondary'} />
+          </CardContent>
+        </CardActionArea>
+      </Card>)}
+    </Box>
+
+    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1.4fr 1fr' }, gap: 3 }}>
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h2" mb={2}>Cinco requisitos</Typography>
+        <Stack spacing={2}>{data.categories.map(category => <Box key={category.key}>
+          <Stack direction="row" justifyContent="space-between"><Typography fontWeight={800}>{category.label}</Typography><Typography>{category.resolvedPercent}% resuelto</Typography></Stack>
+          <LinearProgress variant="determinate" value={category.resolvedPercent} color={category.resolvedPercent === 100 ? 'success' : 'secondary'} sx={{ height: 9, borderRadius: 5, my: .75 }} />
+          <Typography variant="caption" color="text.secondary">{category.confirmed} confirmados · {category.notApplicable} no aplica · {category.pending} por verificar · {category.inProgress} en gestión · {category.notIncluded} no incluidos</Typography>
+        </Box>)}</Stack>
+      </Paper>
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h2" mb={2}>Por operadora</Typography>
+        <Stack spacing={2}>{data.operators.map(operator => <Box key={operator.name}>
+          <Typography fontWeight={850}>{operator.name}</Typography>
+          <Typography color="text.secondary">{operator.passengers} pasajeros · {operator.rooms} habitaciones</Typography>
+          <Typography color="success.main">{operator.resolvedRooms} habitaciones confirmadas</Typography>
+        </Box>)}</Stack>
+      </Paper>
+    </Box>
+    <Typography variant="caption" color="text.secondary">Última actualización operativa: {new Date(data.updatedAt).toLocaleString('es-PY')}. Control preventivo; verificar requisitos migratorios en fuentes oficiales.</Typography>
+  </Stack>
+}

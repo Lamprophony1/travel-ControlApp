@@ -16,6 +16,7 @@ public sealed class PublicReadOptions
 public sealed class PublicReadService(
     AppDbContext db,
     PassengerQueryService passengers,
+    EvidenceResolver evidenceResolver,
     IOptions<PublicReadOptions> options)
 {
     private static readonly string[] RequirementKeys = ["passport", "documentation", "room", "flight", "baggage"];
@@ -47,11 +48,12 @@ public sealed class PublicReadService(
             query = query.Where(x => x.PrimaryOperator != null && x.PrimaryOperator.Name == operatorName);
 
         var entities = await query.OrderBy(x => x.FullName).ToListAsync(ct);
-        var evidence = await AirTicketEvidenceAsync(entities.Select(x => x.Id), ct);
+        var evidence = await evidenceResolver.GetForPassengersAsync(entities.Select(x => x.Id), ct);
         var transfer = await db.TripTransferStatuses.AsNoTracking().Where(x => x.Trip.IsActive)
             .Select(x => x.IsConfirmed).SingleAsync(ct);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var mapped = entities.Select(x => (Entity: x, State: BusinessRules.CalculatePassenger(x, today, evidence.Contains(x.Id))))
+        var mapped = entities.Select(x => (Entity: x, State: BusinessRules.CalculatePassenger(x, today,
+                evidence.GetValueOrDefault(x.Id) ?? new PassengerEvidenceState())))
             .Where(x => !Enum.TryParse<PassengerOverallStatus>(overall, true, out var value) || x.State.OverallStatus == value)
             .Where(x => FilterRequirement(x.State, requirement, status))
             .Select(x => Map(x.Entity, x.State, transfer))
@@ -63,18 +65,20 @@ public sealed class PublicReadService(
     {
         var entity = await passengers.BaseQuery(asNoTracking: true).SingleOrDefaultAsync(x => x.Id == id, ct);
         if (entity is null) return null;
-        var evidence = await AirTicketEvidenceAsync([id], ct);
+        var evidence = await evidenceResolver.GetForPassengersAsync([id], ct);
         var transfer = await db.TripTransferStatuses.AsNoTracking().Where(x => x.Trip.IsActive)
             .Select(x => x.IsConfirmed).SingleAsync(ct);
-        return Map(entity, BusinessRules.CalculatePassenger(entity, DateOnly.FromDateTime(DateTime.UtcNow), evidence.Contains(id)), transfer);
+        return Map(entity, BusinessRules.CalculatePassenger(entity, DateOnly.FromDateTime(DateTime.UtcNow),
+            evidence.GetValueOrDefault(id) ?? new PassengerEvidenceState()), transfer);
     }
 
     public async Task<PublicDashboardDto> GetDashboardAsync(CancellationToken ct)
     {
         var entities = await passengers.BaseQuery(asNoTracking: true).OrderBy(x => x.FullName).ToListAsync(ct);
-        var evidence = await AirTicketEvidenceAsync(entities.Select(x => x.Id), ct);
+        var evidence = await evidenceResolver.GetForPassengersAsync(entities.Select(x => x.Id), ct);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var states = entities.Select(x => (Passenger: x, State: BusinessRules.CalculatePassenger(x, today, evidence.Contains(x.Id)))).ToList();
+        var states = entities.Select(x => (Passenger: x, State: BusinessRules.CalculatePassenger(x, today,
+            evidence.GetValueOrDefault(x.Id) ?? new PassengerEvidenceState()))).ToList();
         var trip = await db.Trips.AsNoTracking().SingleAsync(x => x.IsActive, ct);
         var transfer = await db.TripTransferStatuses.AsNoTracking().SingleAsync(x => x.TripId == trip.Id, ct);
         var total = states.Count;
@@ -83,7 +87,13 @@ public sealed class PublicReadService(
         var ready = states.Count(x => x.State.OverallStatus == PassengerOverallStatus.Ready);
         var pending = states.Count(x => x.State.OverallStatus == PassengerOverallStatus.Pending);
         var attention = states.Count(x => x.State.OverallStatus == PassengerOverallStatus.Attention);
-        var rooms = states.Select(x => x.Passenger.RoomReservation).Where(x => x is not null).DistinctBy(x => x!.Id).ToArray();
+        var rooms = await db.RoomReservations.AsNoTracking().Include(x => x.Passengers)
+            .Where(x => x.TripId == trip.Id).OrderBy(x => x.InternalCode).ToArrayAsync(ct);
+        var roomEvidence = await evidenceResolver.GetRoomEvidenceAsync(rooms.Select(x => x.Id), ct);
+        bool RoomResolved(RoomReservation room) => room.Status == VerificationStatus.Confirmed
+            && BusinessRules.RoomCanBeConfirmed(room, roomEvidence.Contains(room.Id), out _)
+            || room.Status == VerificationStatus.NotApplicable
+            && !string.IsNullOrWhiteSpace(room.CapacityOverrideReason ?? room.Notes);
         var labels = new Dictionary<string, string>
         {
             ["passport"] = "Pasaporte", ["documentation"] = "Documentación", ["room"] = "Habitación",
@@ -105,13 +115,12 @@ public sealed class PublicReadService(
             {
                 var operatorRooms = group.Select(x => x.Passenger.RoomReservation).Where(x => x is not null).DistinctBy(x => x!.Id).ToArray();
                 return new PublicOperatorSummary(group.Key, operatorRooms.Length, group.Count(),
-                    operatorRooms.Count(room => group.Any(x => x.Passenger.RoomReservationId == room!.Id
-                        && BusinessRules.IsResolved(Requirement(x.State, "room")))));
+                    operatorRooms.Count(room => RoomResolved(room!)));
             }).OrderBy(x => x.Name).ToArray();
         var properties = rooms.Count(x => x!.SpecificPropertyPending);
         var missing = new PublicMissingCounts(
             total - CountResolved("flight"), total - CountResolved("baggage"), total - CountResolved("documentation"),
-            total - CountResolved("passport"), total - CountResolved("room"), properties, !transfer.IsConfirmed);
+            total - CountResolved("passport"), total - CountResolved("room"), rooms.Count(x => !RoomResolved(x)), properties, !transfer.IsConfirmed);
         var alerts = new List<string>();
         if (!transfer.IsConfirmed) alerts.Add("Transfer grupal pendiente");
         if (properties > 0) alerts.Add("Hay propiedades de hotel pendientes");
@@ -120,12 +129,14 @@ public sealed class PublicReadService(
         var kpis = new[]
         {
             Kpi("ready", "Pasajeros listos", ready, total), Kpi("pending", "Pasajeros pendientes", pending, total),
-            Kpi("attention", "Pasajeros en atención", attention, total), Kpi("rooms", "Habitaciones resueltas", CountResolved("room"), total),
+            Kpi("attention", "Pasajeros en atención", attention, total),
+            Kpi("accommodationPassengers", "Pasajeros con alojamiento resuelto", CountResolved("room"), total),
+            Kpi("roomsConfirmed", "Habitaciones confirmadas", rooms.Count(RoomResolved), rooms.Length),
             Kpi("flights", "Tickets resueltos", CountResolved("flight"), total), Kpi("baggage", "Maletas resueltas", CountResolved("baggage"), total),
             Kpi("documentation", "Documentaciones resueltas", CountResolved("documentation"), total),
             Kpi("passports", "Pasaportes completos", CountResolved("passport"), total)
         };
-        var updated = entities.Select(x => x.UpdatedAt).Append(transfer.UpdatedAt).DefaultIfEmpty(trip.UpdatedAt).Max();
+        var updated = await evidenceResolver.GetOperationalUpdatedAtAsync(trip.UpdatedAt, ct);
         return new(trip.Name, trip.Destination, total, ready, pending, attention, tripState.ProgressPercent,
             transfer.IsConfirmed, kpis, categories, operators, missing, alerts, updated);
     }
@@ -159,13 +170,6 @@ public sealed class PublicReadService(
     }
 
     private static RequirementState Requirement(PassengerComputedState state, string key) => state.Requirements.Single(x => x.Key == key);
-    private async Task<HashSet<Guid>> AirTicketEvidenceAsync(IEnumerable<Guid> passengerIds, CancellationToken ct)
-    {
-        var ids = passengerIds.Distinct().ToArray();
-        return (await db.Attachments.AsNoTracking()
-            .Where(x => x.PassengerId.HasValue && ids.Contains(x.PassengerId.Value) && x.DocumentType == DocumentType.AirTicket)
-            .Select(x => x.PassengerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
-    }
     private static IReadOnlyList<string> SanitizeAlerts(IEnumerable<string> alerts) => alerts.Select(x => x switch
     {
         BusinessRules.TopTravelPropertyAlert => "Propiedad específica del hotel pendiente",

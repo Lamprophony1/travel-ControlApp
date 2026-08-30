@@ -16,7 +16,8 @@ public sealed class PublicApiTests
     [
         "passportNumber", "maskedPassport", "birthDate", "nationality", "passportExpiry", "phone", "email",
         "dietaryRestrictions", "notes", "nextAction", "nextActionDueDate", "pnr", "electronicTicketNumber",
-        "sourceReference", "operatorContact", "attachments", "followUps", "audit", "updatedBy", "userName"
+        "sourceReference", "operatorContact", "attachments", "followUps", "audit", "auditLog", "updatedBy", "userName",
+        "normalizedPassportNumber", "securePath", "storedName", "originalName", "sha256", "attachmentId", "attachmentLinkId"
     ];
 
     [Fact]
@@ -39,6 +40,10 @@ public sealed class PublicApiTests
         Assert.Equal(HttpStatusCode.OK, detail.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/dashboard", ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/passengers?page=1&pageSize=1", ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/rooms", ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/flights", ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/baggage", ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/attachments", ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/baggage", new { }, ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PutAsJsonAsync("/api/transfer", new { isConfirmed = true, version = 1 }, ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.DeleteAsync($"/api/flights/{Guid.NewGuid()}", ct)).StatusCode);
@@ -47,7 +52,7 @@ public sealed class PublicApiTests
         AssertNoForbiddenKeys(dashboardJson);
         AssertNoForbiddenKeys(JsonDocument.Parse(await list.Content.ReadAsStringAsync(ct)).RootElement);
         AssertNoForbiddenKeys(JsonDocument.Parse(await detail.Content.ReadAsStringAsync(ct)).RootElement);
-        var roomKpi = dashboardJson.GetProperty("kpis").EnumerateArray().Single(x => x.GetProperty("key").GetString() == "rooms");
+        var roomKpi = dashboardJson.GetProperty("kpis").EnumerateArray().Single(x => x.GetProperty("key").GetString() == "roomsConfirmed");
         Assert.Equal(0, roomKpi.GetProperty("value").GetInt32());
         Assert.Single(dashboardJson.GetProperty("alerts").EnumerateArray(), x => x.GetString() == "Transfer grupal pendiente");
     }
@@ -64,6 +69,87 @@ public sealed class PublicApiTests
         Assert.Equal(0, byPassport.GetProperty("total").GetInt32());
         var byName = await client.GetFromJsonAsync<JsonElement>("/api/public/passengers?search=Persona%20ficticia", ct);
         Assert.Equal(1, byName.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task Accommodation_kpis_count_46_people_and_25_distinct_rooms()
+    {
+        await using var factory = new TravelControlWebFactory();
+        var ct = TestContext.Current.CancellationToken;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var trip = await db.Trips.SingleAsync(x => x.IsActive, ct);
+            var op = await db.Operators.SingleAsync(x => x.Name == "Top Travel", ct);
+            var passengerNumber = 0;
+            for (var roomNumber = 1; roomNumber <= 25; roomNumber++)
+            {
+                var room = new RoomReservation
+                {
+                    TripId = trip.Id, OperatorId = op.Id, InternalCode = $"FIX-{roomNumber:00}",
+                    Status = VerificationStatus.Confirmed, Hotel = "Hotel ficticio", RoomType = "Doble",
+                    ExpectedCapacity = 2, CheckIn = trip.StartDate, CheckOut = trip.EndDate, SourceReference = "Referencia ficticia"
+                };
+                var occupants = roomNumber <= 21 ? 2 : 1;
+                for (var index = 0; index < occupants; index++)
+                {
+                    passengerNumber++;
+                    room.Passengers.Add(new Passenger
+                    {
+                        TripId = trip.Id, FullName = $"Persona {passengerNumber:00}", NormalizedName = $"PERSONA {passengerNumber:00}",
+                        PrimaryOperatorId = op.Id
+                    });
+                }
+                db.RoomReservations.Add(room);
+            }
+            await db.SaveChangesAsync(ct);
+        }
+
+        using var client = factory.CreateClient();
+        var dashboard = await client.GetFromJsonAsync<JsonElement>("/api/public/dashboard", ct);
+        var kpis = dashboard.GetProperty("kpis").EnumerateArray().ToArray();
+        var accommodation = kpis.Single(x => x.GetProperty("key").GetString() == "accommodationPassengers");
+        var rooms = kpis.Single(x => x.GetProperty("key").GetString() == "roomsConfirmed");
+        Assert.Equal(46, accommodation.GetProperty("value").GetInt32());
+        Assert.Equal(46, accommodation.GetProperty("total").GetInt32());
+        Assert.Equal(25, rooms.GetProperty("value").GetInt32());
+        Assert.Equal(25, rooms.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task Operational_updated_at_tracks_room_flight_baggage_and_attachment_changes()
+    {
+        await using var factory = new TravelControlWebFactory();
+        var ct = TestContext.Current.CancellationToken;
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var service = scope.ServiceProvider.GetRequiredService<PublicReadService>();
+        var trip = await db.Trips.SingleAsync(x => x.IsActive, ct);
+        var op = await db.Operators.SingleAsync(x => x.Name == "Top Travel", ct);
+        var room = new RoomReservation { TripId = trip.Id, OperatorId = op.Id, InternalCode = "UPDATED-ROOM", ExpectedCapacity = 1 };
+        var passenger = new Passenger { TripId = trip.Id, FullName = "Persona actualizada", NormalizedName = "PERSONA ACTUALIZADA", RoomReservation = room };
+        var flight = new FlightBooking { TripId = trip.Id, Pnr = "UPDATED-PNR" };
+        flight.PassengerFlights.Add(new PassengerFlight { Passenger = passenger });
+        var baggage = new BaggageEntitlement { Passenger = passenger, FlightBooking = flight };
+        db.AddRange(room, passenger, flight, baggage);
+        await db.SaveChangesAsync(ct);
+        var previous = (await service.GetDashboardAsync(ct)).UpdatedAt;
+
+        await Task.Delay(5, ct); room.Hotel = "Hotel nuevo"; await db.SaveChangesAsync(ct);
+        var afterRoom = (await service.GetDashboardAsync(ct)).UpdatedAt; Assert.True(afterRoom > previous); previous = afterRoom;
+        await Task.Delay(5, ct); flight.Airline = "Aerolínea nueva"; await db.SaveChangesAsync(ct);
+        var afterFlight = (await service.GetDashboardAsync(ct)).UpdatedAt; Assert.True(afterFlight > previous); previous = afterFlight;
+        await Task.Delay(5, ct); baggage.Notes = "Cambio ficticio"; await db.SaveChangesAsync(ct);
+        var afterBaggage = (await service.GetDashboardAsync(ct)).UpdatedAt; Assert.True(afterBaggage > previous); previous = afterBaggage;
+        await Task.Delay(5, ct);
+        db.Attachments.Add(new Attachment
+        {
+            DocumentType = DocumentType.Other, OriginalName = "fixture.pdf", StoredName = "fixture.pdf",
+            MimeType = "application/pdf", Size = 10, SecurePath = "fixture.pdf", Sha256 = "UPDATED-HASH", UploadedById = Guid.NewGuid(),
+            Links = [new AttachmentLink { PassengerId = passenger.Id, CreatedByUserId = Guid.NewGuid() }]
+        });
+        await db.SaveChangesAsync(ct);
+        Assert.True((await service.GetDashboardAsync(ct)).UpdatedAt > previous);
     }
 
     private static async Task<Guid> SeedPassengerAsync(IServiceProvider services, CancellationToken ct)

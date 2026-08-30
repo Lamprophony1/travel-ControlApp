@@ -6,7 +6,7 @@ using TravelControl.Infrastructure.Persistence;
 
 namespace TravelControl.Infrastructure.Services;
 
-public sealed class PassengerQueryService(AppDbContext db)
+public sealed class PassengerQueryService(AppDbContext db, EvidenceResolver evidenceResolver)
 {
     public IQueryable<Passenger> BaseQuery(bool asNoTracking = false)
     {
@@ -28,6 +28,16 @@ public sealed class PassengerQueryService(AppDbContext db)
             passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
     }
 
+    public static PassengerListItem Map(Passenger passenger, DateOnly today, PassengerEvidenceState evidence)
+    {
+        var state = BusinessRules.CalculatePassenger(passenger, today, evidence);
+        return new(passenger.Id, passenger.FullName, MaskPassport(passenger.PassportNumber), state.PassportStatus,
+            passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode, passenger.RoomReservation?.Hotel, passenger.RoomReservation?.RoomType,
+            passenger.RoomReservation?.CheckIn, passenger.RoomReservation?.CheckOut, passenger.RoomReservation?.Nights,
+            passenger.DocumentationStatus, state.OverallStatus, state.ProgressPercent, state.Requirements, state.Alerts,
+            passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
+    }
+
     public static string MaskPassport(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return "Sin cargar";
@@ -37,9 +47,15 @@ public sealed class PassengerQueryService(AppDbContext db)
 
     public Task<List<Guid>> AttachmentsWithAirTicketEvidenceAsync(IEnumerable<Guid> passengerIds, CancellationToken ct)
     {
-        var ids = passengerIds.Distinct().ToArray();
-        return db.Attachments.AsNoTracking()
-            .Where(x => x.PassengerId.HasValue && ids.Contains(x.PassengerId.Value) && x.DocumentType == DocumentType.AirTicket)
-            .Select(x => x.PassengerId!.Value).Distinct().ToListAsync(ct);
+        return AirTicketEvidenceAsync(passengerIds, ct);
+    }
+
+    public Task<IReadOnlyDictionary<Guid, PassengerEvidenceState>> EvidenceAsync(IEnumerable<Guid> passengerIds, CancellationToken ct) =>
+        evidenceResolver.GetForPassengersAsync(passengerIds, ct);
+
+    private async Task<List<Guid>> AirTicketEvidenceAsync(IEnumerable<Guid> passengerIds, CancellationToken ct)
+    {
+        var evidence = await evidenceResolver.GetForPassengersAsync(passengerIds, ct);
+        return evidence.Where(x => x.Value.HasAirTicketEvidence).Select(x => x.Key).ToList();
     }
 }

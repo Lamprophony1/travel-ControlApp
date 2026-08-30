@@ -35,8 +35,9 @@ public sealed record PublicMissingCounts(
     int Baggage,
     int Documentation,
     int Passports,
-    int Rooms,
-    int Properties,
+    int PassengersWithoutResolvedAccommodation,
+    int UnresolvedRoomReservations,
+    int SpecificPropertiesPending,
     bool Transfer);
 public sealed record PublicDashboardDto(
     string TripName,

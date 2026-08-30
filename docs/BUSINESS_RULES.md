@@ -13,3 +13,13 @@ Cada pasajero tiene exactamente cinco categorías, de 20% cada una: pasaporte, d
 `NotApplicable` conserva su estado diferenciado y solo cuenta como resuelto con una razón no vacía: documentación usa `DocumentationExceptionReason`, habitación usa la justificación de capacidad u observaciones, vuelo usa notas y equipaje usa `ExceptionReason`.
 
 La preparación global pondera pasajeros al 90% y el único transfer grupal al 10%. El viaje solo queda listo cuando todos los pasajeros están listos, el transfer global está confirmado y no hay alerta global crítica.
+
+## Reglas derivadas y bloqueantes globales
+
+El estado del PNR es de solo lectura. Es `Confirmed` únicamente con PNR, aerolínea, segmentos válidos, pasajeros y todos sus tickets efectivos confirmados; es `InProgress` cuando existe información real incompleta, y `ToVerify` cuando está esencialmente vacío. El backend ignora el estado enviado por clientes antiguos y recalcula al editar reserva, pasajeros o tickets.
+
+El readiness global considera además transfer pendiente, reservas no resueltas, propiedades específicas pendientes, pasajeros en atención y ausencia anómala de pasajeros o habitaciones. Si el cálculo base llega a 100 pero el estado no es `Ready`, el progreso visible se limita a 99.
+
+`BaggageProof` puede ser directo sobre `BaggageEntitlement` o compartido por `FlightBooking`. Se muestra como comprobante directo, compartido por PNR o sin evidencia. Sigue siendo informativo: la regla de franquicia se confirma por ticket efectivo, cantidad/peso y cobertura o excepción justificada.
+
+La importación de identificación prioriza `Identificación`, `Pasaportes`, `Documentos`, `Datos pasajeros` y `Datos de pasajeros`; luego puntúa las cinco columnas. Un empate bloquea y exige `sheetName`. Fechas futuras, edad superior a 120 años, vencimiento anterior al nacimiento o fecha imposible bloquean. Vencido, anterior al regreso, dentro del umbral o formato ambiguo son advertencias preventivas y no declaraciones migratorias.

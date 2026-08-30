@@ -3,11 +3,19 @@ set -Eeuo pipefail
 
 APP_ROOT="${TRAVELCONTROL_ROOT:-/opt/travel-control}"
 DB_PATH="${TRAVELCONTROL_DB_PATH:-${APP_ROOT}/data/travel-control.db}"
-REQUIRE_BASELINE="${1:-}"
+REQUIRE_BASELINE=""
+POST_DEPLOY=false
+for argument in "$@"; do
+  case "${argument}" in
+    --require-baseline) REQUIRE_BASELINE="--require-baseline" ;;
+    --post-deploy) POST_DEPLOY=true ;;
+    *) echo "Unknown argument" >&2; exit 2 ;;
+  esac
+done
 
 [[ "$(realpath -m "${APP_ROOT}")" == "/opt/travel-control" ]] || { echo "Invalid app root" >&2; exit 1; }
 [[ -s "${DB_PATH}" ]] || { echo "Production database is missing or empty" >&2; exit 1; }
-for command in docker sqlite3 realpath; do command -v "${command}" >/dev/null; done
+for command in docker sqlite3 realpath find; do command -v "${command}" >/dev/null; done
 
 CONTAINER_IMAGE="$(docker inspect --format '{{.Config.Image}}' travel-control 2>/dev/null || true)"
 PERMISSION_IMAGE="${TRAVELCONTROL_IMAGE:-${CONTAINER_IMAGE}}"
@@ -44,9 +52,29 @@ top_travel_rooms="$(scalar "SELECT COUNT(*) FROM \"RoomReservations\" r JOIN \"O
 bespoke_rooms="$(scalar "SELECT COUNT(*) FROM \"RoomReservations\" r JOIN \"Operators\" o ON o.\"Id\" = r.\"OperatorId\" WHERE o.\"Name\" = 'Bespoke';")"
 baggage_duplicates="$(scalar 'SELECT COUNT(*) FROM (SELECT "PassengerId", "FlightBookingId" FROM "BaggageEntitlements" WHERE "FlightBookingId" IS NOT NULL GROUP BY "PassengerId", "FlightBookingId" HAVING COUNT(*) > 1);')"
 attachment_hash_duplicates="$(scalar 'SELECT COUNT(*) FROM (SELECT "Sha256" FROM "Attachments" GROUP BY "Sha256" HAVING COUNT(*) > 1);')"
+attachment_files="$(find "${APP_ROOT}/attachments" -maxdepth 1 -type f | wc -l | tr -d ' ')"
 
 [[ "${baggage_duplicates}" == "0" ]] || { echo "Duplicate baggage records detected; migration stopped" >&2; exit 1; }
 [[ "${attachment_hash_duplicates}" == "0" ]] || { echo "Duplicate attachment hashes detected; migration stopped" >&2; exit 1; }
+
+if [[ "${POST_DEPLOY}" == true ]]; then
+  evidence_column="$(scalar "SELECT COUNT(*) FROM pragma_table_info('AttachmentLinks') WHERE name = 'EvidenceType';")"
+  passenger_flight_version_column="$(scalar "SELECT COUNT(*) FROM pragma_table_info('PassengerFlights') WHERE name = 'Version';")"
+  [[ "${evidence_column}" == "1" ]] || { echo "EvidenceType column is missing" >&2; exit 1; }
+  [[ "${passenger_flight_version_column}" == "1" ]] || { echo "PassengerFlight Version column is missing" >&2; exit 1; }
+  invalid_evidence_types="$(scalar 'SELECT COUNT(*) FROM "AttachmentLinks" WHERE "EvidenceType" NOT BETWEEN 0 AND 4;')"
+  invalid_link_targets="$(scalar 'SELECT COUNT(*) FROM "AttachmentLinks" WHERE (("PassengerId" IS NOT NULL) + ("RoomReservationId" IS NOT NULL) + ("FlightBookingId" IS NOT NULL) + ("BaggageEntitlementId" IS NOT NULL)) <> 1;')"
+  duplicate_typed_links="$(scalar "SELECT COUNT(*) FROM (SELECT \"AttachmentId\", CASE WHEN \"PassengerId\" IS NOT NULL THEN 'P:' || \"PassengerId\" WHEN \"RoomReservationId\" IS NOT NULL THEN 'R:' || \"RoomReservationId\" WHEN \"FlightBookingId\" IS NOT NULL THEN 'F:' || \"FlightBookingId\" ELSE 'B:' || \"BaggageEntitlementId\" END AS target, \"EvidenceType\" FROM \"AttachmentLinks\" GROUP BY \"AttachmentId\", target, \"EvidenceType\" HAVING COUNT(*) > 1);")"
+  legacy_links_missing="$(scalar 'SELECT COUNT(*) FROM "Attachments" a WHERE (a."PassengerId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."PassengerId"=a."PassengerId" AND l."EvidenceType"=a."DocumentType")) OR (a."RoomReservationId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."RoomReservationId"=a."RoomReservationId" AND l."EvidenceType"=a."DocumentType")) OR (a."FlightBookingId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."FlightBookingId"=a."FlightBookingId" AND l."EvidenceType"=a."DocumentType")) OR (a."BaggageEntitlementId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."BaggageEntitlementId"=a."BaggageEntitlementId" AND l."EvidenceType"=a."DocumentType"));')"
+  invalid_ticket_versions="$(scalar 'SELECT COUNT(*) FROM "PassengerFlights" WHERE "Version" < 1;')"
+  duplicate_tickets="$(scalar 'SELECT COUNT(*) FROM (SELECT "PassengerId", "FlightBookingId" FROM "PassengerFlights" GROUP BY "PassengerId", "FlightBookingId" HAVING COUNT(*) > 1);')"
+  [[ "${invalid_evidence_types}" == "0" ]] || { echo "Invalid evidence types detected" >&2; exit 1; }
+  [[ "${invalid_link_targets}" == "0" ]] || { echo "Invalid attachment link targets detected" >&2; exit 1; }
+  [[ "${duplicate_typed_links}" == "0" ]] || { echo "Duplicate typed attachment links detected" >&2; exit 1; }
+  [[ "${legacy_links_missing}" == "0" ]] || { echo "Legacy attachment associations were not migrated" >&2; exit 1; }
+  [[ "${invalid_ticket_versions}" == "0" ]] || { echo "Invalid ticket versions detected" >&2; exit 1; }
+  [[ "${duplicate_tickets}" == "0" ]] || { echo "Duplicate passenger tickets detected" >&2; exit 1; }
+fi
 
 if [[ "${REQUIRE_BASELINE}" == "--require-baseline" ]]; then
   [[ "${passengers}" == "46" ]] || { echo "Expected 46 passengers; found ${passengers}" >&2; exit 1; }
@@ -63,6 +91,7 @@ printf '%s\n' \
   "rooms=${rooms}" \
   "users=${users}" \
   "attachments=${attachments}" \
+  "attachment_files=${attachment_files}" \
   "top_travel_passengers=${top_travel_passengers}" \
   "bespoke_passengers=${bespoke_passengers}" \
   "top_travel_rooms=${top_travel_rooms}" \

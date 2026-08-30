@@ -7,3 +7,9 @@ El build de React se copia a `wwwroot`; navegador, estáticos y `/api` comparten
 Las escrituras validan CSRF, rol, DTO, reglas y `Version`; un conflicto devuelve 409. Los estados de pasajeros, cinco categorías y preparación del viaje se calculan en backend. La UI invalida consultas después de guardar. Serilog evita payloads sensibles y los health checks separan proceso y base.
 
 La PWA precachea únicamente shell estático. `/api` y `/health` no entran al cache ni se promete edición offline.
+
+## Servicios de coherencia
+
+`TripReadinessService` es la única composición de estados efectivos, habitaciones, propiedades, transfer, conteos, bloqueantes, progreso y estado global. `DashboardService`, `PublicReadService` y `ExcelExportService` consumen el mismo snapshot; la salida pública solo sanitiza textos y campos.
+
+`EvidenceResolver` clasifica exclusivamente mediante `AttachmentLink.EvidenceType`. `AttachmentStorage` deduplica el binario, crea vínculos tipados y ejecuta la desvinculación en una transacción. Para el último vínculo mueve primero el archivo a `.quarantine` dentro del mismo filesystem, confirma SQLite y luego lo elimina; un rollback restaura el archivo. Una falla de limpieza posterior queda registrada sin exponer rutas.

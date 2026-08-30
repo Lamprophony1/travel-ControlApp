@@ -14,3 +14,7 @@ La interfaz mantiene TypeUI Clean, Material UI, grilla de 8 px, paleta limitada 
 El dashboard usa rojo mientras exista cualquier entregable obligatorio pendiente y verde únicamente con todos los pasajeros listos, transfer confirmado y sin alertas globales. Los estados individuales en gestión conservan amarillo/azul según contexto.
 
 Playwright también comprueba navegación pública sin login, manifest PWA, búsqueda pública, detalle sanitizado, administración autenticada y respuestas 401 de endpoints privados sin cookie.
+
+Las evidencias muestran texto para tipo, fuente, alcance, cantidad afectada y condición directa/compartida. En móvil las acciones se apilan y mantienen 44×44 px; la ficha no ofrece “Desvincular” para evidencia heredada y enlaza a la superficie responsable. El diálogo de ticket permanece abierto ante 409 y ofrece “Recargar datos”. El estado general del PNR se presenta como texto calculado, no como selector.
+
+Los flujos nuevos se ejecutan en los cinco proyectos Playwright configurados: evidencia tipada/compartida, impacto de desvinculación, concurrencia de ticket, identificación idempotente/conflictos y transición de readiness. Los fixtures son nombres, documentos, PNR y archivos exclusivamente ficticios.

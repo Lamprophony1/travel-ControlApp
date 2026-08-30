@@ -20,8 +20,8 @@ sanitized_logs() {
 }
 
 wait_for_health() {
-  local attempt container_health
-  for attempt in {1..30}; do
+  local container_health
+  for _ in {1..30}; do
     container_health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
     if [[ "${container_health}" == "healthy" ]] \
       && curl --fail --silent --show-error "http://127.0.0.1:${TRAVELCONTROL_HOST_PORT}/health/ready" >/dev/null; then

@@ -76,3 +76,11 @@ Playwright usa `E2E_BASE_URL` y prueba Chromium en 360×800, 390×844, 430×932,
 - Migraciones: `dotnet ef migrations add Nombre --project src/TravelControl.Infrastructure --startup-project src/TravelControl.Api --output-dir Persistence/Migrations`.
 
 Más detalle: [arquitectura](docs/ARCHITECTURE.md), [acceso público](docs/PUBLIC_READ_ACCESS.md), [auditoría responsive](docs/RESPONSIVE_AUDIT.md), [modelo](docs/DATA_MODEL.md), [reglas](docs/BUSINESS_RULES.md), [importación](docs/IMPORT_EXPORT.md), [seguridad](docs/SECURITY.md), [despliegue](docs/DEPLOYMENT.md) y [decisiones](docs/DECISIONS.md).
+
+## Endurecimiento de coherencia
+
+La clasificación documental autoritativa vive en `AttachmentLink.EvidenceType`: un único archivo deduplicado por hash puede actuar como ticket aéreo y comprobante de maleta para el mismo PNR. Los campos de destino y `DocumentType` de `Attachment` permanecen temporalmente como compatibilidad de rollback, pero el código nuevo no los usa para resolver evidencia. La ficha individual solo desvincula evidencia directa; los vínculos heredados se administran en su PNR, habitación o equipaje con una advertencia de alcance.
+
+`TripReadinessService` alimenta dashboard público, dashboard privado y Excel. Un viaje no muestra 100 % si queda cualquier bloqueante global. El PNR también es derivado: su estado no se edita manualmente, y cada ticket individual usa `Version`, `UpdatedAt` y `UpdatedById` para rechazar sobrescrituras con 409.
+
+“Exportación estructurada JSON” contiene datos estructurados y no sustituye el [backup completo del servidor](docs/BACKUP_RESTORE.md): no incluye archivos, claves ni configuración. El endpoint preferido es `/api/exports/structured.json`; `/api/exports/backup.json` es un alias obsoleto temporal.

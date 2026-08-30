@@ -22,7 +22,13 @@ jobs:
     name: Test application
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Validate shell scripts
+        shell: bash
+        run: |
+          bash -n scripts/*.sh
+          if command -v shellcheck >/dev/null 2>&1; then shellcheck scripts/*.sh; fi
+          bash scripts/test-backup-permissions.sh
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
@@ -55,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -66,7 +72,7 @@ jobs:
       - name: Remove stale test container
         run: docker rm -f travel-control 2>/dev/null || true
       - name: Start test container
-        run: docker run -d --name travel-control -p 127.0.0.1:8080:8080 -e Security__CookieSecure=false travel-control:test
+        run: docker run -d --name travel-control -p 127.0.0.1:8080:8080 -e Security__CookieSecure=false -e RateLimiting__AuthPermitLimit=100 travel-control:test
       - name: Wait for readiness
         shell: bash
         run: |
@@ -107,7 +113,7 @@ jobs:
     outputs:
       image: ${{ steps.image.outputs.name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Normalize GHCR image name
         id: image
         shell: bash
@@ -139,7 +145,7 @@ jobs:
       TRAVELCONTROL_ROOT: /opt/travel-control
       TRAVELCONTROL_ENV_FILE: /opt/travel-control/travel-control.env
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Login to GHCR
         shell: bash
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -158,6 +164,7 @@ jobs:
           install -m 0750 scripts/preflight-travel-control.sh /opt/travel-control/scripts/preflight-travel-control.sh
           install -m 0750 scripts/backup-travel-control.sh /opt/travel-control/scripts/backup-travel-control.sh
           install -m 0750 scripts/restore-travel-control.sh /opt/travel-control/scripts/restore-travel-control.sh
+          install -m 0750 scripts/verify-backup-artifact.sh /opt/travel-control/scripts/verify-backup-artifact.sh
           install -m 0750 scripts/deploy-travel-control.sh /opt/travel-control/scripts/deploy-travel-control.sh
           install -m 0750 scripts/verify-production-state.sh /opt/travel-control/scripts/verify-production-state.sh
           install -m 0750 scripts/smoke-public-read.sh /opt/travel-control/scripts/smoke-public-read.sh
@@ -182,7 +189,7 @@ jobs:
         run: |
           after_state="$(mktemp)"
           trap 'rm -f -- "${after_state}"' EXIT
-          /opt/travel-control/scripts/verify-production-state.sh --require-baseline \
+          /opt/travel-control/scripts/verify-production-state.sh --require-baseline --post-deploy \
             | tee "${after_state}"
           diff -- "${RUNNER_TEMP}/travel-control-state-before.txt" "${after_state}"
       - name: Sanitized diagnostics

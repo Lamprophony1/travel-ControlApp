@@ -13,3 +13,7 @@ El token antiforgery se renueva después de login y logout porque queda vinculad
 Adjuntos PDF/PNG/JPEG se validan por tamaño, MIME y firma binaria, se renombran por UUID, se deduplican con SHA-256 y quedan fuera de `wwwroot`. El service worker no cachea datos ni documentos.
 
 El repositorio ignora `data/private`, `.env`, SQLite local, adjuntos, builds y reportes. Producción usa cookies Secure, Cloudflare TLS, puerto ligado solo a loopback y archivos persistentes bajo `/opt/travel-control`. El `.env` tiene modo 600 y el workbook se monta read-only. Los backups locales incluyen datos privados y deben copiarse a almacenamiento externo cifrado.
+
+Los DTO públicos también prohíben `evidenceType`, identificadores/rutas de vínculos, alcance, versiones de ticket y `updatedById`. El impacto privado devuelve solo tipo, etiqueta y cantidad afectada; no enumera personas. El cliente nunca aporta una ruta de filesystem.
+
+Desvincular requiere Editor o Administrator; `deleteIfOrphan=true` requiere Administrator. La auditoría conserva tipo, destino, alcance técnico y ticket enmascarado, nunca el ticket completo ni la ruta/nombre almacenado. Backups y restore rechazan directorios distintos de 700, archivos distintos de 600, checksum inválido o SQLite corrupto.

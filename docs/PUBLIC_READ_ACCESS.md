@@ -18,7 +18,7 @@ Dashboard: nombre y destino del viaje, conteos, porcentaje, cinco categorías, r
 
 Pasajero: ID, nombre según `NameMode`, operadora, código interno, hotel/propiedad, tipo, check-in/check-out, estado general, porcentaje, los cinco estados, nombres genéricos de faltantes, alertas sanitizadas y transfer booleano.
 
-Nunca se emiten las claves `passportNumber`, `maskedPassport`, `birthDate`, `nationality`, `passportExpiry`, `phone`, `email`, `dietaryRestrictions`, `notes`, `nextAction`, `nextActionDueDate`, `pnr`, `electronicTicketNumber`, `sourceReference`, `operatorContact`, `attachments`, `followUps`, `audit`, `updatedBy` o `userName`. Los tests recorren el JSON completo y fallan si aparece alguna.
+Nunca se emiten las claves `passportNumber`, `maskedPassport`, `birthDate`, `nationality`, `passportExpiry`, `phone`, `email`, `dietaryRestrictions`, `notes`, `nextAction`, `nextActionDueDate`, `pnr`, `electronicTicketNumber`, `sourceReference`, `operatorContact`, `attachments`, `attachmentId`, `attachmentLinkId`, `linkId`, `evidenceType`, `sourceId`, `managePath`, `affectedPassengerCount`, `ticketVersion`, `updatedById`, `followUps`, `audit`, `updatedBy` o `userName`. Los tests recorren el JSON completo y fallan si aparece alguna.
 
 La búsqueda pública solo usa nombre normalizado y código interno. Los filtros permitidos son estado general, operadora, requisito y estado del requisito. La página máxima es 50.
 
@@ -47,6 +47,8 @@ PublicRead__NameMode=Full
 ## Compartir y PWA
 
 “Compartir enlace” usa Web Share cuando está disponible y copia una URL same-origin sin tokens como fallback. La PWA tiene `start_url: /`, por lo que abre el dashboard público. No se cachean respuestas operativas.
+
+El banner usa la misma fotografía de readiness que gestión y Excel. Su acción prioriza casos en atención y requisitos individuales; cuando solo queda transfer o alojamiento global desplaza a `#transfer-status` o `#accommodation-status`. Ambas secciones son informativas y el transfer público nunca ofrece escritura.
 
 ## Rollback
 

@@ -188,3 +188,9 @@ curl -fsS "https://${APP_HOSTNAME}/health/ready"
 ```
 
 La base, adjuntos, workbook y keys permanecen en `/opt/travel-control`; cambiar la imagen no los reemplaza.
+
+La migración `AddEvidenceTypeAndTicketConcurrency` es aditiva: completa `AttachmentLinks.EvidenceType` desde la clasificación histórica, inicializa versiones de tickets y conserva IDs, hash, rutas, nombres y binarios. El verificador pre-deploy no consulta columnas nuevas; el post-deploy exige tipos válidos, un destino por vínculo, ausencia de duplicados tipados, asociaciones legadas migradas y versiones de ticket mayores o iguales a 1.
+
+Después del último push y despliegue exitoso, `main` debe bloquear force-push y eliminación para todos, incluidos administradores, sin exigir PR ni impedir direct push. Si el token `gh` no tiene administración, activar manualmente en `Settings → Branches → main`: “Block force pushes” y “Restrict deletions”. Nunca aplicar esa protección antes de terminar los pushes de la iteración.
+
+Rollback: usar la imagen SHA anterior sin revertir esquema ni persistencia. La imagen anterior ignora las columnas aditivas y sigue leyendo los campos legados de `Attachment`; no crear con la imagen nueva combinaciones tipadas incompatibles si se prevé un rollback prolongado. Restaurar backup solo si existe corrupción o una migración no recuperable y siempre validar checksum, `integrity_check`, health y conteos.

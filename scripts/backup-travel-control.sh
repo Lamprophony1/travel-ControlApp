@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 APP_ROOT="${TRAVELCONTROL_ROOT:-/opt/travel-control}"
 DB_PATH="${TRAVELCONTROL_DB_PATH:-${APP_ROOT}/data/travel-control.db}"
@@ -27,7 +28,7 @@ docker run --rm --network none --read-only --user 0:0 --entrypoint sh \
     done
   '
 
-mkdir -p "${DESTINATION}"
+install -d -m 700 "${DESTINATION}"
 sqlite3 "${DB_PATH}" ".timeout 10000" ".backup '${DESTINATION}/travel-control.db'"
 [[ "$(sqlite3 "${DESTINATION}/travel-control.db" 'PRAGMA integrity_check;')" == "ok" ]]
 
@@ -41,6 +42,12 @@ docker run --rm --network none --read-only --user 10001:10001 --entrypoint tar \
   cd "${DESTINATION}"
   sha256sum travel-control.db persistent-files.tar.gz > SHA256SUMS
 )
+
+chmod 600 "${DESTINATION}/travel-control.db"
+chmod 600 "${DESTINATION}/persistent-files.tar.gz"
+chmod 600 "${DESTINATION}/SHA256SUMS"
+chmod 700 "${DESTINATION}"
+"$(dirname "$0")/verify-backup-artifact.sh" "${DESTINATION}"
 
 BACKUP_ROOT_REAL="$(realpath "${BACKUP_ROOT}")"
 while IFS= read -r -d '' candidate; do

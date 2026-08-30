@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 /opt/travel-control/backups/YYYYMMDDTHHMMSSZ" >&2
@@ -15,13 +16,7 @@ case "${SOURCE_REAL}" in
   *) echo "Backup must be under ${BACKUP_ROOT_REAL}" >&2; exit 1 ;;
 esac
 
-[[ -f "${SOURCE_REAL}/travel-control.db" ]]
-[[ -f "${SOURCE_REAL}/persistent-files.tar.gz" ]]
-(
-  cd "${SOURCE_REAL}"
-  sha256sum --check SHA256SUMS
-)
-[[ "$(sqlite3 "${SOURCE_REAL}/travel-control.db" 'PRAGMA integrity_check;')" == "ok" ]]
+"$(dirname "$0")/verify-backup-artifact.sh" "${SOURCE_REAL}"
 
 cd "${APP_ROOT}/deploy"
 docker compose --project-name travel-control stop travel-control

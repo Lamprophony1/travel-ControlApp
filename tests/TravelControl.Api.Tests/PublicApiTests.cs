@@ -48,13 +48,26 @@ public sealed class PublicApiTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/baggage", ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/attachments", ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/baggage", new { }, ct)).StatusCode);
+        using (var import = new MultipartFormDataContent())
+        {
+            import.Add(new ByteArrayContent("row;name"u8.ToArray()), "file", "manifest.csv");
+            Assert.Equal(HttpStatusCode.Unauthorized,
+                (await client.PostAsync("/api/imports/passenger-travel/preview", import, ct)).StatusCode);
+        }
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PutAsJsonAsync("/api/transfer", new { isConfirmed = true, version = 1 }, ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.DeleteAsync($"/api/flights/{Guid.NewGuid()}", ct)).StatusCode);
 
         var dashboardJson = JsonDocument.Parse(await dashboard.Content.ReadAsStringAsync(ct)).RootElement;
         AssertNoForbiddenKeys(dashboardJson);
-        AssertNoForbiddenKeys(JsonDocument.Parse(await list.Content.ReadAsStringAsync(ct)).RootElement);
-        AssertNoForbiddenKeys(JsonDocument.Parse(await detail.Content.ReadAsStringAsync(ct)).RootElement);
+        var listJson = JsonDocument.Parse(await list.Content.ReadAsStringAsync(ct)).RootElement;
+        var detailJson = JsonDocument.Parse(await detail.Content.ReadAsStringAsync(ct)).RootElement;
+        AssertNoForbiddenKeys(listJson);
+        AssertNoForbiddenKeys(detailJson);
+        var publicFlight = Assert.Single(detailJson.GetProperty("flights").EnumerateArray());
+        Assert.Equal("Copa Airlines", publicFlight.GetProperty("airline").GetString());
+        Assert.Equal("Confirmed", publicFlight.GetProperty("ticketStatus").GetString());
+        Assert.Equal("Copa Airlines", dashboardJson.GetProperty("airlines").EnumerateArray()
+            .Single(x => x.GetProperty("name").GetString() == "Copa Airlines").GetProperty("name").GetString());
         var roomKpi = dashboardJson.GetProperty("kpis").EnumerateArray().Single(x => x.GetProperty("key").GetString() == "roomsConfirmed");
         Assert.Equal(0, roomKpi.GetProperty("value").GetInt32());
         Assert.Single(dashboardJson.GetProperty("alerts").EnumerateArray(), x => x.GetString() == "Transfer grupal pendiente");
@@ -201,7 +214,16 @@ public sealed class PublicApiTests
             BirthDate = new DateOnly(1990, 1, 1), Nationality = "Ficticia", PassportExpiry = trip.EndDate.AddYears(2),
             PrimaryOperatorId = op.Id, RoomReservation = room, Phone = "000", Email = "fixture@example.test"
         };
-        db.Passengers.Add(passenger);
+        var flight = new FlightBooking
+        {
+            TripId = trip.Id, Pnr = "PRIVATE-PNR-999", Airline = "Copa Airlines (CM)", Status = VerificationStatus.Confirmed
+        };
+        flight.PassengerFlights.Add(new PassengerFlight
+        {
+            Passenger = passenger, TicketStatus = VerificationStatus.Confirmed,
+            ElectronicTicketNumber = "PRIVATE-ELECTRONIC-TICKET-999"
+        });
+        db.AddRange(passenger, flight);
         await db.SaveChangesAsync(ct);
         return passenger.Id;
     }

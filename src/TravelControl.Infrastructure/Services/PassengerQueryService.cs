@@ -25,7 +25,7 @@ public sealed class PassengerQueryService(AppDbContext db, EvidenceResolver evid
             passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode, passenger.RoomReservation?.Hotel, passenger.RoomReservation?.RoomType,
             passenger.RoomReservation?.CheckIn, passenger.RoomReservation?.CheckOut, passenger.RoomReservation?.Nights,
             passenger.DocumentationStatus, state.OverallStatus, state.ProgressPercent, state.Requirements, state.Alerts,
-            passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
+            Flights(passenger), passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
     }
 
     public static PassengerListItem Map(Passenger passenger, DateOnly today, PassengerEvidenceState evidence)
@@ -35,8 +35,14 @@ public sealed class PassengerQueryService(AppDbContext db, EvidenceResolver evid
             passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode, passenger.RoomReservation?.Hotel, passenger.RoomReservation?.RoomType,
             passenger.RoomReservation?.CheckIn, passenger.RoomReservation?.CheckOut, passenger.RoomReservation?.Nights,
             passenger.DocumentationStatus, state.OverallStatus, state.ProgressPercent, state.Requirements, state.Alerts,
-            passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
+            Flights(passenger), passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
     }
+
+    private static IReadOnlyList<PassengerFlightSummary> Flights(Passenger passenger) => passenger.PassengerFlights
+        .OrderBy(x => x.FlightBooking.Airline).ThenBy(x => x.FlightBooking.Pnr)
+        .Select(x => new PassengerFlightSummary(x.FlightBookingId, x.FlightBooking.Airline, x.FlightBooking.Pnr,
+            x.TicketStatus, x.FlightBooking.Segments.Count > 0))
+        .ToArray();
 
     public static string MaskPassport(string? value)
     {

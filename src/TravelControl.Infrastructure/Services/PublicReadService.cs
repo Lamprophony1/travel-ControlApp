@@ -83,6 +83,7 @@ public sealed class PublicReadService(
                 operatorRooms.Count(room => snapshot.Passengers.Any(p => p.Passenger.RoomReservationId == room!.Id
                     && BusinessRules.IsResolved(Requirement(p.State, "room")))));
         }).OrderBy(x => x.Name).ToArray();
+        var airlines = DashboardService.BuildAirlineSummary(snapshot.Passengers.Select(x => x.Passenger));
         var missing = new PublicMissingCounts(total - snapshot.Requirements["flight"].Resolved,
             total - snapshot.Requirements["baggage"].Resolved, total - snapshot.Requirements["documentation"].Resolved,
             total - snapshot.Requirements["passport"].Resolved, total - snapshot.Requirements["room"].Resolved,
@@ -109,7 +110,7 @@ public sealed class PublicReadService(
         };
         return new(snapshot.Trip.Name, snapshot.Trip.Destination, total, snapshot.ReadyPassengers, snapshot.PendingPassengers,
             snapshot.AttentionPassengers, snapshot.ProgressPercent, snapshot.OverallStatus, snapshot.Transfer.IsConfirmed, kpis, categories,
-            operators, missing, alerts, snapshot.UpdatedAt);
+            operators, airlines, missing, alerts, snapshot.UpdatedAt);
     }
 
     private static PublicDashboardKpi Kpi(string key, string label, int value, int total) =>
@@ -119,11 +120,22 @@ public sealed class PublicReadService(
     {
         var requirements = state.Requirements.Select(x => new PublicRequirementDto(x.Key, x.Label, x.Status)).ToArray();
         var missing = state.Requirements.Where(x => !BusinessRules.IsResolved(x)).Select(x => x.Label).ToArray();
+        var flights = passenger.PassengerFlights.Where(x => !string.IsNullOrWhiteSpace(x.FlightBooking.Airline))
+            .OrderBy(x => x.FlightBooking.Airline)
+            .Select(x => new PublicFlightDto(PublicAirline(x.FlightBooking.Airline!), x.TicketStatus))
+            .ToArray();
         return new(passenger.Id, PublicName(passenger), passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode,
             passenger.RoomReservation?.Hotel, passenger.RoomReservation?.RoomType, passenger.RoomReservation?.CheckIn,
             passenger.RoomReservation?.CheckOut, state.OverallStatus, state.ProgressPercent, requirements, missing,
-            SanitizeAlerts(state.Alerts), transferConfirmed);
+            SanitizeAlerts(state.Alerts), transferConfirmed, flights);
     }
+
+    private static string PublicAirline(string airline) => airline.Trim() switch
+    {
+        var value when value.StartsWith("Copa Airlines", StringComparison.OrdinalIgnoreCase) => "Copa Airlines",
+        var value when value.StartsWith("LATAM Airlines", StringComparison.OrdinalIgnoreCase) => "LATAM Airlines",
+        var value => value
+    };
 
     private string PublicName(Passenger passenger) => _options.NameMode.Trim() switch
     {

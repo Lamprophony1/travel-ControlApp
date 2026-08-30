@@ -113,7 +113,7 @@ async function openTicketDialog(page:Page,pnr:string,passengerName:string){
   const card=page.getByRole('heading',{name:pnr}).locator('xpath=ancestor::*[contains(@class,"MuiCard-root")][1]')
   await expect(card).toBeVisible()
   const passenger=card.getByText(passengerName,{exact:true}).locator('xpath=ancestor::*[contains(@class,"MuiAlert-root")][1]')
-  await passenger.getByRole('button',{name:/Cargar ticket|Editar/}).click()
+  await passenger.getByRole('button',{name:'Gestionar ticket'}).click()
   await expect(page.getByRole('dialog',{name:`Ticket de ${passengerName}`})).toBeVisible()
 }
 
@@ -160,7 +160,7 @@ test('gestión protegida y detalle público no expone datos sensibles',async({pa
   await page.goto('/gestion/pasajeros')
   await expect(page.getByRole('heading',{name:'Pasajeros'})).toBeVisible()
   await expect(page.getByLabel('Pasaporte')).toBeVisible()
-  await expect(page.getByLabel('PNR')).toBeVisible()
+  await expect(page.getByLabel('PNR',{exact:true})).toBeVisible()
   await expect(page.getByLabel('Ticket')).toBeVisible()
   const desktop=(page.viewportSize()?.width??0)>=1200
   if(desktop){
@@ -181,6 +181,54 @@ test('rutas privadas sin cookie devuelven 401',async({request})=>{
   expect((await request.get('/api/baggage')).status()).toBe(401)
   expect((await request.get('/api/attachments')).status()).toBe(401)
   expect((await request.post('/api/baggage',{data:{}})).status()).toBe(401)
+})
+
+test('manifiesto ficticio confirma reservas sin ticket electrónico y mantiene el PNR privado',async({page},testInfo:TestInfo)=>{
+  await enterManagement(page)
+  const token=await csrf(page)
+  const suffix=testInfo.project.name.replace(/[^a-z0-9]/gi,'-')
+  const firstName=`E2E Reserva Uno ${suffix}`
+  const secondName=`E2E Reserva Dos ${suffix}`
+  const firstId=await createPassenger(page,firstName,token)
+  await createPassenger(page,secondName,token)
+  const pnr=`RSV-${suffix}`.toUpperCase()
+  const csv=[
+    'row;name;passport;birth_date;passport_expiry;nationality_code;pnr;airline_code;check_in;check_out',
+    `1;${firstName};PX-${suffix}-1;1990-01-01;2035-01-01;Pya;${pnr};CM;;`,
+    `2;${secondName};PX-${suffix}-2;1991-01-01;2035-01-01;Pya;${pnr};CM;;`,
+  ].join('\n')
+
+  await page.goto('/gestion/importar')
+  const card=page.getByRole('heading',{name:'Actualización de pasajeros y tickets'}).locator('xpath=ancestor::*[contains(@class,"MuiCard-root")][1]')
+  await card.locator('input[type="file"]').setInputFiles({name:'manifest-fixture.csv',mimeType:'text/csv',buffer:Buffer.from(csv,'utf8')})
+  await card.getByLabel('Confirmo que los valores personales no vacíos de esta fuente pueden sobrescribir valores existentes').check()
+  await card.getByLabel('Confirmo agregar las nuevas reservas detectadas conservando las asignaciones aéreas existentes').check()
+  await card.getByRole('button',{name:'Vista previa'}).click()
+  await expect(card.getByRole('group',{name:'Filas leídas'})).toContainText('2')
+  await expect(card.getByRole('group',{name:'PNR únicos'})).toContainText('1')
+  await expect(card.getByText('Copa Airlines: 2 pasajeros')).toBeVisible()
+  await card.getByLabel('Confirmo administrativamente esta actualización autoritativa con el mismo hash').check()
+  await card.getByRole('button',{name:'Confirmar actualización'}).click()
+  await expect(card.getByText('Actualización confirmada y auditada.')).toBeVisible()
+
+  await page.goto(`/gestion/pasajeros/${firstId}`)
+  await expect(page.getByText('Copa Airlines (CM)',{exact:true}).first()).toBeVisible()
+  await expect(page.getByText(pnr,{exact:true}).first()).toBeVisible()
+  await expect(page.getByText('Número electrónico no informado',{exact:true}).first()).toBeVisible()
+  if((page.viewportSize()?.width??0)<900){
+    await page.getByRole('combobox',{name:'Sección'}).click()
+    await page.getByRole('option',{name:'Vuelo'}).click()
+  }else await page.getByRole('tab',{name:'Vuelo'}).click()
+  await expect(page.getByText('Itinerario detallado no cargado',{exact:true}).first()).toBeVisible()
+
+  await page.goto(`/pasajeros/${firstId}`)
+  await expect(page.getByText('Copa Airlines',{exact:true}).first()).toBeVisible()
+  await expect(page.getByText('Confirmado',{exact:true}).first()).toBeVisible()
+  await expect(page.getByText(pnr,{exact:true})).toHaveCount(0)
+  const publicResponse=await page.request.get(`/api/public/passengers/${firstId}`)
+  const publicJson=JSON.stringify(await publicResponse.json())
+  expect(publicJson).toContain('Copa Airlines')
+  for(const key of forbidden)expect(publicJson.toLowerCase()).not.toContain(`"${key.toLowerCase()}"`)
 })
 
 test('evidencia compartida tipada, impacto seguro y ticket concurrente',async({page},testInfo:TestInfo)=>{
@@ -303,6 +351,10 @@ test('readiness limita a 99 con un bloqueante global y vuelve a 100 al resolverl
   const room=(await (await page.request.get('/api/rooms')).json() as E2ERoom[]).find(item=>item.id===roomId)!
   const resolved=await page.request.put(`/api/rooms/${room.id}`,{headers:{'X-XSRF-TOKEN':token},data:roomUpdate(room,'Hotel ficticio')})
   expect(resolved.ok()).toBeTruthy()
+  await expect.poll(async()=>{
+    const response=await page.request.get('/api/public/dashboard')
+    return response.ok()?(await response.json()).overallStatus:'Unavailable'
+  },{timeout:10_000}).toBe('Ready')
   await page.reload()
   await expect(page.getByText('El viaje está listo')).toBeVisible()
   await expect(page.getByText('100%',{exact:true})).toBeVisible()

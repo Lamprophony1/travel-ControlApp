@@ -63,7 +63,7 @@ public sealed class MutationIntegrityTests
     }
 
     [Fact]
-    public async Task Ticket_and_baggage_confirmations_enforce_effective_rules_and_group_reports_skips()
+    public async Task Confirmed_ticket_without_electronic_number_is_effective_for_baggage_and_group_reports_skips()
     {
         await using var factory = new TravelControlWebFactory();
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true, BaseAddress = new Uri("https://localhost") });
@@ -72,11 +72,18 @@ public sealed class MutationIntegrityTests
         var fixture = await SeedBaggageFixtureAsync(factory.Services, ct);
         var ticketVersion = await CurrentTicketVersionAsync(factory.Services, fixture.FlightId, fixture.EligiblePassengerId, ct);
 
-        var incompleteTicket = await SendJsonAsync(client, HttpMethod.Put,
+        var confirmedTicket = await SendJsonAsync(client, HttpMethod.Put,
             $"/api/flights/{fixture.FlightId}/passengers/{fixture.EligiblePassengerId}/ticket",
             new { electronicTicketNumber = "", status = "Confirmed", notes = (string?)null, version = ticketVersion }, csrf);
-        Assert.Equal(HttpStatusCode.BadRequest, incompleteTicket.StatusCode);
-        Assert.Contains("ticket electrónico", await incompleteTicket.Content.ReadAsStringAsync(ct), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.OK, confirmedTicket.StatusCode);
+
+        await using (var ticketScope = factory.Services.CreateAsyncScope())
+        {
+            var ticket = await ticketScope.ServiceProvider.GetRequiredService<AppDbContext>().PassengerFlights
+                .SingleAsync(x => x.FlightBookingId == fixture.FlightId && x.PassengerId == fixture.EligiblePassengerId, ct);
+            Assert.Equal(VerificationStatus.Confirmed, ticket.TicketStatus);
+            Assert.Null(ticket.ElectronicTicketNumber);
+        }
 
         var withoutBooking = Baggage(fixture.EligiblePassengerId, null, 1, 23, true, true, null);
         Assert.Equal(HttpStatusCode.BadRequest, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage", withoutBooking, csrf)).StatusCode);
@@ -237,6 +244,37 @@ public sealed class MutationIntegrityTests
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         Assert.Equal(1, await db.Attachments.CountAsync(x => x.Id == fixture.AttachmentId, ct));
         Assert.Equal(0, await db.AttachmentLinks.CountAsync(x => x.AttachmentId == fixture.AttachmentId, ct));
+    }
+
+    [Fact]
+    public async Task Passenger_travel_preview_requires_authentication_and_csrf_and_returns_only_sanitized_counts()
+    {
+        await using var factory = new TravelControlWebFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true, BaseAddress = new Uri("https://localhost") });
+        var ct = TestContext.Current.CancellationToken;
+        var csrf = await AuthenticateAsync(client, ct);
+        await SeedPassengerAsync(factory.Services, "Persona para importacion", ct);
+        const string csv = "row;name;passport;birth_date;passport_expiry;nationality_code;pnr;airline_code;check_in;check_out\n"
+            + "1;Persona para importacion;FIXTURE-PASSPORT;1990-01-01;2030-01-01;Pya;PRIVATE-PNR;CM;;";
+
+        using (var missingCsrf = new MultipartFormDataContent())
+        {
+            missingCsrf.Add(new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes(csv)), "file", "manifest.csv");
+            Assert.Equal(HttpStatusCode.BadRequest,
+                (await client.PostAsync("/api/imports/passenger-travel/preview", missingCsrf, ct)).StatusCode);
+        }
+
+        using var valid = new MultipartFormDataContent();
+        valid.Add(new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes(csv)), "file", "manifest.csv");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/imports/passenger-travel/preview") { Content = valid };
+        request.Headers.Add("X-XSRF-TOKEN", csrf);
+        var response = await client.SendAsync(request, ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct)).RootElement;
+        Assert.True(result.GetProperty("canCommit").GetBoolean());
+        Assert.Equal(1, result.GetProperty("matchedPassengers").GetInt32());
+        Assert.DoesNotContain("PRIVATE-PNR", await response.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+        Assert.DoesNotContain("FIXTURE-PASSPORT", await response.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
     }
 
     private static async Task<string> AuthenticateAsync(HttpClient client, CancellationToken ct)

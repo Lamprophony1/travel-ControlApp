@@ -3,7 +3,7 @@
 - `Trip` posee exactamente un `TripTransferStatus` global.
 - `Passenger` conserva datos de viaje, operadora principal, habitación y próxima acción; no tiene responsable interno ni transfer individual.
 - `RoomReservation` agrupa pasajeros bajo un código operativo estable.
-- `FlightBooking` representa un PNR con segmentos; `PassengerFlight` conserva ticket y estado individual.
+- `FlightBooking` representa un PNR compartido con aerolínea y segmentos opcionales; `PassengerFlight` conserva el estado individual y un número electrónico opcional.
 - `BaggageEntitlement` representa cantidad, peso y cobertura de ida/regreso.
 - `Attachment`, `FollowUp`, `AuditLog` e `ImportRun` cubren evidencia, seguimiento, trazabilidad e importaciones.
 - `AppUser` usa roles `Administrator`, `Editor` y `Viewer`.

@@ -151,6 +151,58 @@ public sealed class BusinessRulesTests
         Assert.Equal(VerificationStatus.ToVerify, BusinessRules.DeriveFlightBookingStatus(booking));
     }
 
+    [Fact]
+    public void Confirmed_ticket_requires_only_pnr_airline_and_confirmed_status()
+    {
+        var passenger = Passenger();
+        var booking = new FlightBooking { TripId = Guid.NewGuid(), Pnr = "FIXTURE-PNR", Airline = "Aerolínea ficticia" };
+        var link = new PassengerFlight { Passenger = passenger, FlightBooking = booking, TicketStatus = VerificationStatus.Confirmed };
+        booking.PassengerFlights.Add(link);
+        passenger.PassengerFlights.Add(link);
+
+        Assert.True(BusinessRules.FlightCanBeConfirmed(booking, link, out var missing));
+        Assert.Empty(missing);
+        Assert.Null(link.ElectronicTicketNumber);
+        Assert.Empty(booking.Segments);
+        Assert.Equal(VerificationStatus.Confirmed, BusinessRules.DeriveFlightBookingStatus(booking));
+        Assert.True(BusinessRules.IsResolved(BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1))
+            .Requirements.Single(x => x.Key == "flight")));
+    }
+
+    [Theory]
+    [InlineData(null, "Aerolínea ficticia", VerificationStatus.Confirmed)]
+    [InlineData("FIXTURE-PNR", null, VerificationStatus.Confirmed)]
+    [InlineData("FIXTURE-PNR", "Aerolínea ficticia", VerificationStatus.ToVerify)]
+    public void Ticket_is_not_effective_when_an_authoritative_field_is_missing(
+        string? pnr, string? airline, VerificationStatus status)
+    {
+        var booking = new FlightBooking { TripId = Guid.NewGuid(), Pnr = pnr, Airline = airline };
+        var link = new PassengerFlight { FlightBooking = booking, TicketStatus = status };
+
+        Assert.False(BusinessRules.FlightCanBeConfirmed(booking, link, out _));
+        Assert.NotEqual(VerificationStatus.Confirmed, BusinessRules.DeriveFlightBookingStatus(booking));
+    }
+
+    [Fact]
+    public void Effective_ticket_allows_baggage_without_electronic_number_or_segments()
+    {
+        var passenger = Passenger();
+        var booking = new FlightBooking { TripId = Guid.NewGuid(), Pnr = "FIXTURE-PNR", Airline = "Aerolínea ficticia" };
+        var link = new PassengerFlight { Passenger = passenger, FlightBooking = booking, FlightBookingId = booking.Id, TicketStatus = VerificationStatus.Confirmed };
+        passenger.PassengerFlights.Add(link);
+        var baggage = new BaggageEntitlement
+        {
+            Passenger = passenger, FlightBookingId = booking.Id, Status = VerificationStatus.Confirmed,
+            CheckedBagCount = 1, WeightPerBagKg = 23, AppliesOutbound = true, AppliesReturn = true
+        };
+        passenger.BaggageEntitlements.Add(baggage);
+
+        var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
+
+        Assert.True(BusinessRules.IsResolved(state.Requirements.Single(x => x.Key == "baggage")));
+        Assert.Equal(VerificationStatus.ToVerify, passenger.DocumentationStatus);
+    }
+
     private static PassengerFlight ValidBooking(Passenger passenger, string ticket, VerificationStatus status)
     {
         var booking = new FlightBooking

@@ -103,7 +103,7 @@ export function PassengersPage() {
       <CardContent>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
           <TextField fullWidth value={search} onChange={event => setSearch(event.target.value)} onKeyDown={event => event.key === 'Enter' && submitSearch()}
-            label="Buscar por nombre" slotProps={{ input: { startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> } }} />
+            label="Buscar por nombre o PNR" slotProps={{ input: { startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> } }} />
           <Button variant="contained" onClick={submitSearch}>Buscar</Button>
           <Button startIcon={<FilterAltOffIcon />} onClick={clearFilters}>Limpiar</Button>
         </Stack>
@@ -114,6 +114,9 @@ export function PassengersPage() {
           <TextField size="small" label="Código de grupo" value={params.get('groupCode') ?? ''} onChange={event => setFilter('groupCode', event.target.value)} />
           <TextField select size="small" label="Operadora" value={params.get('operatorName') ?? ''} onChange={event => setFilter('operatorName', event.target.value)}>
             <MenuItem value="">Todas</MenuItem>{operators.data?.map(item => <MenuItem key={item.id} value={item.name}>{item.name}</MenuItem>)}
+          </TextField>
+          <TextField select size="small" label="Aerolínea" value={params.get('airline') ?? ''} onChange={event => setFilter('airline', event.target.value)}>
+            <MenuItem value="">Todas</MenuItem><MenuItem value="Copa Airlines">Copa Airlines</MenuItem><MenuItem value="LATAM Airlines">LATAM Airlines</MenuItem><MenuItem value="none">Sin aerolínea</MenuItem>
           </TextField>
           <TextField select size="small" label="Estado general" value={params.get('overall') ?? ''} onChange={event => setFilter('overall', event.target.value)}>
             <MenuItem value="">Todos</MenuItem><MenuItem value="Ready">Listo</MenuItem><MenuItem value="Pending">Pendiente</MenuItem><MenuItem value="Attention">Atención</MenuItem>
@@ -146,7 +149,7 @@ export function PassengersPage() {
         <CardActionArea onClick={() => openPassenger(passenger.id)}>
           <CardContent>
             <Stack direction="row" justifyContent="space-between" gap={1}>
-              <Box><Typography fontWeight={850} fontSize="1.05rem">{passenger.fullName}</Typography><Typography variant="body2" color="text.secondary">{passenger.operator ?? 'Sin operadora'} · {passenger.roomCode ?? 'Sin grupo'} · {passenger.maskedPassport}</Typography></Box>
+              <Box><Typography fontWeight={850} fontSize="1.05rem">{passenger.fullName}</Typography><Typography variant="body2" color="text.secondary">{passenger.operator ?? 'Sin operadora'} · {passenger.roomCode ?? 'Sin grupo'} · {passenger.maskedPassport}</Typography>{passenger.flights.length===0?<Typography variant="body2" color="text.secondary" mt={.75}>Sin reserva</Typography>:passenger.flights.map(flight=><Box key={flight.flightBookingId} mt={.75}><Typography variant="body2" fontWeight={800}>{flight.airline??'Sin aerolínea'}</Typography><Typography variant="body2" color="text.secondary">Reserva: {flight.pnr??'Sin reserva'}</Typography></Box>)}</Box>
               <Checkbox checked={selected.has(passenger.id)} onClick={event => event.stopPropagation()} onChange={() => toggle(passenger.id)} inputProps={{ 'aria-label': `Seleccionar ${passenger.fullName}` }} />
             </Stack>
             <Stack direction="row" gap={1} flexWrap="wrap" my={1.5}>{passenger.requirements.map(item => <Stack key={item.key} direction="row" alignItems="center" gap={.5}><Typography variant="caption" fontWeight={800}>{item.label}</Typography><StatusChip status={item.status} /></Stack>)}</Stack>
@@ -160,21 +163,25 @@ export function PassengersPage() {
     </Box>
 
     <TableContainer data-testid="passenger-desktop-table" component={Paper} sx={{ display: { xs: 'none', lg: 'block' }, maxHeight: '68vh' }}>
-      <Table stickyHeader size="small" aria-label="Lista privada de pasajeros" sx={{ minWidth: 1280 }}>
+      <Table stickyHeader size="small" aria-label="Lista privada de pasajeros" sx={{ minWidth: 1540 }}>
         <TableHead><TableRow>
           <TableCell padding="checkbox"><Checkbox aria-label="Seleccionar página" checked={data.items.length > 0 && data.items.every(item => selected.has(item.id))} onChange={event => setSelected(current => { const next = new Set(current); data.items.forEach(item => event.target.checked ? next.add(item.id) : next.delete(item.id)); return next })} /></TableCell>
           <SortableCell label="Pasajero" sortKey="name" params={params} onSort={sort} />
           <TableCell>Nro. pasaporte</TableCell><SortableCell label="Operadora" sortKey="operator" params={params} onSort={sort} />
-          <SortableCell label="Grupo" sortKey="group" params={params} onSort={sort} /><SortableCell label="Hotel" sortKey="hotel" params={params} onSort={sort} />
-          <TableCell>Estado pasaporte</TableCell><TableCell>Documentación</TableCell><TableCell>Habitación</TableCell><TableCell>Ticket</TableCell><TableCell>Maleta 23 kg</TableCell>
+          <SortableCell label="Grupo" sortKey="group" params={params} onSort={sort} /><TableCell>Aerolínea</TableCell><TableCell>Nro. de reserva</TableCell><TableCell>Ticket</TableCell><SortableCell label="Hotel" sortKey="hotel" params={params} onSort={sort} />
+          <TableCell>Estado pasaporte</TableCell><TableCell>Documentación</TableCell><TableCell>Habitación</TableCell><TableCell>Maleta 23 kg</TableCell>
           <SortableCell label="Estado" sortKey="overall" params={params} onSort={sort} /><SortableCell label="Progreso" sortKey="progress" params={params} onSort={sort} />
           <TableCell>Próxima acción</TableCell><SortableCell label="Fecha límite" sortKey="due" params={params} onSort={sort} />
         </TableRow></TableHead>
         <TableBody>{data.items.map(passenger => <TableRow hover key={passenger.id} onClick={() => openPassenger(passenger.id)} sx={{ cursor: 'pointer', '& td': { py: 1 } }}>
           <TableCell padding="checkbox"><Checkbox checked={selected.has(passenger.id)} onClick={event => event.stopPropagation()} onChange={() => toggle(passenger.id)} inputProps={{ 'aria-label': `Seleccionar ${passenger.fullName}` }} /></TableCell>
           <TableCell><Typography fontWeight={800} fontSize=".88rem">{passenger.fullName}</Typography></TableCell><TableCell>{passenger.maskedPassport}</TableCell>
-          <TableCell>{passenger.operator ?? '—'}</TableCell><TableCell>{passenger.roomCode ?? '—'}</TableCell><TableCell>{passenger.hotel ?? '—'}</TableCell>
-          {['passport', 'documentation', 'room', 'flight', 'baggage'].map(key => <TableCell key={key}><StatusChip status={requirement(passenger, key).status} /></TableCell>)}
+          <TableCell>{passenger.operator ?? '—'}</TableCell><TableCell>{passenger.roomCode ?? '—'}</TableCell>
+          <TableCell>{passenger.flights.length===0?'Sin aerolínea':<Stack spacing={.5}>{passenger.flights.map(f=><Typography key={f.flightBookingId} variant="body2">{f.airline??'Sin aerolínea'}</Typography>)}</Stack>}</TableCell>
+          <TableCell>{passenger.flights.length===0?'Sin reserva':<Stack spacing={.5}>{passenger.flights.map(f=><Typography key={f.flightBookingId} variant="body2" fontFamily="monospace">{f.pnr??'Sin reserva'}</Typography>)}</Stack>}</TableCell>
+          <TableCell>{passenger.flights.length===0?<StatusChip status={requirement(passenger,'flight').status}/>:<Stack spacing={.5}>{passenger.flights.map(f=><StatusChip key={f.flightBookingId} status={f.ticketStatus}/>)}</Stack>}</TableCell>
+          <TableCell>{passenger.hotel ?? '—'}</TableCell>
+          {['passport', 'documentation', 'room', 'baggage'].map(key => <TableCell key={key}><StatusChip status={requirement(passenger, key).status} /></TableCell>)}
           <TableCell><StatusChip status={passenger.overallStatus} /></TableCell><TableCell><Typography fontWeight={800}>{passenger.progressPercent}%</Typography></TableCell>
           <TableCell sx={{ maxWidth: 180 }}><Typography variant="body2" noWrap>{passenger.nextAction ?? '—'}</Typography></TableCell><TableCell>{formatDate(passenger.nextActionDueDate)}</TableCell>
         </TableRow>)}</TableBody>

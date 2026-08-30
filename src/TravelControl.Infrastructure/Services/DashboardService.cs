@@ -56,6 +56,7 @@ public sealed class DashboardService(AppDbContext db, TripReadinessService readi
             return new OperatorSummary(group.Key, rooms.Length, group.Count(), rooms.Count(x => resolvedRoomIds.Contains(x!.Id)),
                 group.SelectMany(x => x.State.Alerts).Distinct().ToArray());
         }).OrderBy(x => x.Name).ToArray();
+        var airlines = BuildAirlineSummary(snapshot.Passengers.Select(x => x.Passenger));
         var transferUser = snapshot.Transfer.UpdatedByUserId.HasValue
             ? await users.FindByIdAsync(snapshot.Transfer.UpdatedByUserId.Value.ToString()) : null;
         var transfer = new TransferStatusResponse(snapshot.Transfer.IsConfirmed, snapshot.Transfer.ConfirmedAt, snapshot.Transfer.Notes,
@@ -75,6 +76,29 @@ public sealed class DashboardService(AppDbContext db, TripReadinessService readi
         return new(kpis, categories,
             new Dictionary<string, int> { ["ready"] = snapshot.ReadyPassengers, ["pending"] = snapshot.PendingPassengers, ["attention"] = snapshot.AttentionPassengers },
             operators, actions, activity, transfer, tripState,
-            snapshot.RoomsConfirmed, snapshot.RoomsPending, snapshot.SpecificPropertiesPending);
+            snapshot.RoomsConfirmed, snapshot.RoomsPending, snapshot.SpecificPropertiesPending, airlines);
     }
+
+    internal static IReadOnlyList<AirlineSummary> BuildAirlineSummary(IEnumerable<Passenger> passengers)
+    {
+        var people = passengers.ToArray();
+        var values = people.SelectMany(passenger => passenger.PassengerFlights
+                .Where(link => !string.IsNullOrWhiteSpace(link.FlightBooking.Airline))
+                .Select(link => new { passenger.Id, Airline = DisplayAirline(link.FlightBooking.Airline!) }))
+            .Distinct()
+            .GroupBy(x => x.Airline, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new AirlineSummary(group.First().Airline, group.Select(x => x.Id).Distinct().Count()))
+            .OrderBy(x => x.Name)
+            .ToList();
+        var withoutAirline = people.Count(passenger => passenger.PassengerFlights.All(link => string.IsNullOrWhiteSpace(link.FlightBooking.Airline)));
+        values.Add(new AirlineSummary("Sin aerolínea confirmada", withoutAirline));
+        return values;
+    }
+
+    private static string DisplayAirline(string airline) => airline.Trim() switch
+    {
+        var value when value.StartsWith("Copa Airlines", StringComparison.OrdinalIgnoreCase) => "Copa Airlines",
+        var value when value.StartsWith("LATAM Airlines", StringComparison.OrdinalIgnoreCase) => "LATAM Airlines",
+        var value => value
+    };
 }

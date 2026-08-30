@@ -54,6 +54,8 @@ dotnet run --project src/TravelControl.Api -- --import data/private/Control_viaj
 dotnet run --project src/TravelControl.Api -- --import data/private/Control_viaje.xlsx
 ```
 
+La UI administrativa también admite un manifiesto privado CSV/XLSX para completar identidad y asociar pasajeros existentes a reservas. Requiere vista previa, mismo SHA-256 y confirmación explícita; agrupa por PNR, no crea ni elimina pasajeros o habitaciones y nunca usa el PNR como número de ticket electrónico. Un ticket es efectivo con PNR, aerolínea y estado individual confirmado; el número electrónico y el itinerario detallado son opcionales.
+
 ## Verificación
 
 ```sh

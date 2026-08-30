@@ -108,6 +108,7 @@ export function PublicDashboardPage() {
         <StatusChip status={data.transferConfirmed ? 'Confirmed' : 'ToVerify'} />
       </Stack>
     </Paper>
+    <Paper sx={{ p: 3 }}><Typography variant="h2" mb={2}>Resumen por aerolínea</Typography><Box sx={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,210px),1fr))',gap:2}}>{data.airlines.map(airline=><Card key={airline.name} variant="outlined"><CardContent><Typography fontWeight={850}>{airline.name.replace(/ \([A-Z]{2}\)$/,'')}</Typography><Typography>{airline.passengers} pasajeros</Typography></CardContent></Card>)}</Box></Paper>
     <Typography variant="caption" color="text.secondary">Última actualización operativa: {new Date(data.updatedAt).toLocaleString('es-PY')}. Control preventivo; verificar requisitos migratorios en fuentes oficiales.</Typography>
   </Stack>
 }

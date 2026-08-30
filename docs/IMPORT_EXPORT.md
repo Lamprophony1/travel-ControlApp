@@ -7,3 +7,7 @@ El dry-run no escribe, pero ejecuta parseo, comparación y validaciones completa
 En una base vacía, el bootstrap privado es opt-in. Si se marca `Required`, un archivo ausente o conteos distintos de 46 pasajeros/25 habitaciones impiden el arranque. Enriquecimientos opcionales de invitados o identificación solo actualizan campos explícitos.
 
 Las exportaciones incluyen dashboard calculado, pasajeros con pasaporte enmascarado, habitaciones, fuentes, pendientes y backup JSON administrativo. El transfer pendiente aparece una sola vez como asunto global.
+
+La actualización privada de pasajeros y tickets usa `row`, `name`, `passport`, `birth_date`, `passport_expiry`, `nationality_code`, `pnr`, `airline_code`, `check_in` y `check_out`. Valida UTF-8, duplicados, contradicciones, propiedad de pasaporte y fechas imposibles. Solo completa campos vacíos salvo confirmación explícita de sobrescritura; nunca confirma documentación ni revisión de pasaporte. Para confirmar se exige repetir el mismo archivo, el mismo hash y los alias manuales revisados. Los PNR se agrupan sin copiarlos a `ElectronicTicketNumber`; una reserva diferente requiere aceptación explícita y se agrega sin borrar asociaciones existentes; `check_in` y `check_out` quedan fuera de la persistencia.
+
+Los CSV/XLSX privados exportados muestran `Aerolínea`, `Nro. de reserva`, `Estado ticket` y `Número ticket electrónico`. Si el número electrónico no existe, permanece vacío; no se sustituye con el PNR.

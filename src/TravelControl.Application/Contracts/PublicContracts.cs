@@ -3,6 +3,7 @@ using TravelControl.Domain;
 namespace TravelControl.Application.Contracts;
 
 public sealed record PublicRequirementDto(string Key, string Label, VerificationStatus Status);
+public sealed record PublicFlightDto(string Airline, VerificationStatus TicketStatus);
 public sealed record PublicPassengerDto(
     Guid Id,
     string Name,
@@ -17,7 +18,8 @@ public sealed record PublicPassengerDto(
     IReadOnlyList<PublicRequirementDto> Requirements,
     IReadOnlyList<string> Missing,
     IReadOnlyList<string> Alerts,
-    bool TransferConfirmed);
+    bool TransferConfirmed,
+    IReadOnlyList<PublicFlightDto> Flights);
 
 public sealed record PublicDashboardKpi(string Key, string Label, int Value, int Total, int Percent);
 public sealed record PublicCategoryProgress(
@@ -52,6 +54,7 @@ public sealed record PublicDashboardDto(
     IReadOnlyList<PublicDashboardKpi> Kpis,
     IReadOnlyList<PublicCategoryProgress> Categories,
     IReadOnlyList<PublicOperatorSummary> Operators,
+    IReadOnlyList<AirlineSummary> Airlines,
     PublicMissingCounts Missing,
     IReadOnlyList<string> Alerts,
     DateTimeOffset UpdatedAt);

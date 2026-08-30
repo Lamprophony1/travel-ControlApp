@@ -71,17 +71,19 @@ builder.Services.AddAntiforgery(options =>
 builder.Services.AddRateLimiter(options =>
 {
     var authPermitLimit = builder.Configuration.GetValue<int?>("RateLimiting:AuthPermitLimit") ?? 8;
+    var publicPermitLimit = builder.Configuration.GetValue<int?>("RateLimiting:PublicPermitLimit") ?? 120;
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
         { PermitLimit = authPermitLimit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("public-read", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
-        { PermitLimit = 120, Window = TimeSpan.FromMinutes(5), QueueLimit = 0, AutoReplenishment = true }));
+        { PermitLimit = publicPermitLimit, Window = TimeSpan.FromMinutes(5), QueueLimit = 0, AutoReplenishment = true }));
 });
 builder.Services.Configure<PublicReadOptions>(builder.Configuration.GetSection("PublicRead"));
 builder.Services.AddScoped<ExcelImportService>();
 builder.Services.AddScoped<IdentificationImportService>();
+builder.Services.AddScoped<PassengerTravelManifestImportService>();
 builder.Services.AddScoped<ExcelExportService>();
 builder.Services.AddScoped<EvidenceResolver>();
 builder.Services.AddScoped<PassengerQueryService>();
@@ -127,7 +129,18 @@ app.Use(async (ctx, next) =>
 {
     if (ctx.Request.Path.StartsWithSegments("/api") && !HttpMethods.IsGet(ctx.Request.Method)
         && !HttpMethods.IsHead(ctx.Request.Method) && !HttpMethods.IsOptions(ctx.Request.Method))
-        await ctx.RequestServices.GetRequiredService<IAntiforgery>().ValidateRequestAsync(ctx);
+    {
+        try
+        {
+            await ctx.RequestServices.GetRequiredService<IAntiforgery>().ValidateRequestAsync(ctx);
+        }
+        catch (AntiforgeryValidationException)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(new { message = "La validación de seguridad venció o no es válida. Recargá la página." });
+            return;
+        }
+    }
     await next();
 });
 

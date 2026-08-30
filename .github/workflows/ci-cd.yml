@@ -72,7 +72,7 @@ jobs:
       - name: Remove stale test container
         run: docker rm -f travel-control 2>/dev/null || true
       - name: Start test container
-        run: docker run -d --name travel-control -p 127.0.0.1:8080:8080 -e Security__CookieSecure=false -e RateLimiting__AuthPermitLimit=100 travel-control:test
+        run: docker run -d --name travel-control -p 127.0.0.1:8080:8080 -e Security__CookieSecure=false -e RateLimiting__AuthPermitLimit=100 -e RateLimiting__PublicPermitLimit=1000 travel-control:test
       - name: Wait for readiness
         shell: bash
         run: |

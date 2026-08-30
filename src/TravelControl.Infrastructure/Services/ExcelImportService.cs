@@ -223,9 +223,9 @@ public sealed class ExcelImportService(AppDbContext db, ILogger<ExcelImportServi
         {
             var name = ValueAny(row, headers, "PASAJERO"); if (string.IsNullOrWhiteSpace(name)) continue;
             if (ParseStatus(ValueAny(row, headers, "ESTADO TICKET DE VUELO")) == VerificationStatus.Confirmed)
-                issues.Add(new("Advertencia", sheet.Name, row.RowNumber(), "Ticket confirmado sin datos estructurados: queda Por verificar hasta registrar PNR y número de ticket."));
+                issues.Add(new("Advertencia", sheet.Name, row.RowNumber(), "Ticket confirmado sin datos estructurados: queda Por verificar hasta registrar PNR, aerolínea y estado individual confirmado."));
             if (ParseStatus(ValueAny(row, headers, "MALETA 23 KG INCLUIDA")) == VerificationStatus.Confirmed)
-                issues.Add(new("Advertencia", sheet.Name, row.RowNumber(), "Equipaje confirmado sin datos estructurados: queda Por verificar hasta registrar cantidad, peso e itinerario."));
+                issues.Add(new("Advertencia", sheet.Name, row.RowNumber(), "Equipaje confirmado sin datos estructurados: queda Por verificar hasta registrar reserva efectiva, cantidad, peso y cobertura."));
             result.Add(new(name, ValueAny(row, headers, "OPERADORA") ?? "", ValueAny(row, headers, "HABITACION / GRUPO"),
                 ParseStatus(ValueAny(row, headers, "ESTADO DOCUMENTACION", "DOCUMENTACION")), ValueAny(row, headers, "PROXIMA ACCION"),
                 ValueAny(row, headers, "OBSERVACIONES"), row.RowNumber()));

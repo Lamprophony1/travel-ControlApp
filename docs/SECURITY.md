@@ -4,7 +4,9 @@ Identity usa hashes, contraseña compleja de 12 caracteres, bloqueo tras cinco f
 
 Pasaportes se enmascaran por defecto y solo Editor/Administrator pueden revelarlos. Las respuestas `/api` envían `no-store`. CSP, `nosniff`, denegación de framing, referrer y permissions policy se aplican globalmente.
 
-La API pública está aislada bajo `/api/public`, admite únicamente GET, usa DTOs de lista blanca y aplica `public-read` (120 solicitudes cada 5 minutos por IP). Nunca incluye pasaporte —ni siquiera enmascarado—, nacimiento, contacto, PNR, ticket, referencias, notas, adjuntos, seguimientos, auditoría o identidad del usuario. La búsqueda anónima solo considera nombre y código interno. El máximo de página es 50.
+La API pública está aislada bajo `/api/public`, admite únicamente GET, usa DTOs de lista blanca y aplica `public-read` (120 solicitudes cada 5 minutos por IP). Puede mostrar aerolínea y estado operativo del ticket, pero nunca incluye pasaporte —ni siquiera enmascarado—, nacimiento, contacto, PNR, número electrónico, referencias, notas, adjuntos, seguimientos, auditoría o identidad del usuario. La búsqueda anónima solo considera nombre y código interno. El máximo de página es 50.
+
+La actualización privada de pasajeros/reservas está restringida a administradores, protegida por cookie y CSRF, y no registra nombres, PNR, pasaportes ni contenido del archivo. Vista previa y commit se vinculan por SHA-256; la auditoría conserva solo hash, conteos y campos afectados. Los errores devueltos son sanitizados y los ejemplos sensibles se enmascaran.
 
 Todas las respuestas llevan `X-Robots-Tag: noindex, nofollow, noarchive`; también existen `robots.txt` y meta robots. Esto reduce indexación accidental, pero no es un control de acceso: la seguridad real es la proyección explícita y reducida de los DTOs públicos. No hay CORS abierto, JSONP, Swagger productivo, archivos ni exportaciones anónimas. El service worker excluye `/api/` y `/health/`.
 

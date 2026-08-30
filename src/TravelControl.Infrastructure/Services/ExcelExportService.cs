@@ -41,14 +41,17 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
     public async Task<byte[]> ExportPassengersCsvAsync(CancellationToken ct)
     {
         var people = await passengerQueries.BaseQuery().OrderBy(x => x.FullName).ToListAsync(ct);
-        var lines = new List<string> { "Nombre,Pasaporte enmascarado,Operadora,Código interno de grupo,Estado general,Avance,Próxima acción,Fecha próxima acción" };
+        var lines = new List<string> { "Nombre,Pasaporte enmascarado,Operadora,Código interno de grupo,Aerolínea,Nro. de reserva,Estado ticket,Número ticket electrónico,Estado general,Avance,Próxima acción,Fecha próxima acción" };
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var evidence = await evidenceResolver.GetForPassengersAsync(people.Select(x => x.Id), ct);
         foreach (var passenger in people)
         {
             var state = BusinessRules.CalculatePassenger(passenger, today, evidence.GetValueOrDefault(passenger.Id) ?? new PassengerEvidenceState());
+            var flights = passenger.PassengerFlights.OrderBy(x => x.FlightBooking.Airline).ThenBy(x => x.FlightBooking.Pnr).ToArray();
             lines.Add(string.Join(',', new[] { passenger.FullName, PassengerQueryService.MaskPassport(passenger.PassportNumber),
-                passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode, OverallLabel(state.OverallStatus),
+                passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode,
+                JoinFlights(flights, x => x.FlightBooking.Airline), JoinFlights(flights, x => x.FlightBooking.Pnr),
+                JoinFlights(flights, x => VerificationLabel(x.TicketStatus)), JoinFlights(flights, x => x.ElectronicTicketNumber), OverallLabel(state.OverallStatus),
                 state.ProgressPercent.ToString(), passenger.NextAction, passenger.NextActionDueDate?.ToString("dd/MM/yyyy") }.Select(Csv)));
         }
         return Encoding.UTF8.GetBytes(string.Join("\r\n", lines));
@@ -82,19 +85,30 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
         Row(sheet, 9, "Progreso global", snapshot.ProgressPercent, 100, snapshot.ProgressPercent);
         Row(sheet, 10, "Estado global", snapshot.OverallStatus.ToString(), "Calculado", snapshot.ProgressPercent);
         Row(sheet, 11, "Transfer grupal", snapshot.Transfer.IsConfirmed ? "Confirmado" : "Pendiente", "Único", snapshot.Transfer.IsConfirmed ? 100 : 0);
+        Row(sheet, 13, "Aerolínea", "Pasajeros", null, null); Header(sheet.Range(13, 1, 13, 2));
+        var airlineRow = 14;
+        foreach (var airline in DashboardService.BuildAirlineSummary(snapshot.Passengers.Select(x => x.Passenger)))
+            Row(sheet, airlineRow++, airline.Name, airline.Passengers, null, null);
         sheet.Columns().AdjustToContents(12, 38); sheet.SheetView.FreezeRows(3);
     }
 
     private static void BuildPassengers(IXLWorksheet sheet, IReadOnlyList<Passenger> passengers, IReadOnlyDictionary<Guid, PassengerEvidenceState> evidence)
     {
-        var headers = new[] { "Pasajero", "Estado pasaporte", "Operadora", "Habitación / grupo", "Pasaporte enmascarado", "Documentación", "Habitación", "Vuelo", "Maleta 23 kg", "Avance", "Próxima acción", "Fecha próxima acción", "Observaciones" };
+        var headers = new[] { "Pasajero", "Estado pasaporte", "Operadora", "Habitación / grupo", "Pasaporte enmascarado",
+            "Aerolínea", "Nro. de reserva", "Estado ticket", "Número ticket electrónico",
+            "Documentación", "Habitación", "Vuelo", "Maleta 23 kg", "Avance", "Próxima acción", "Fecha próxima acción", "Observaciones" };
         Row(sheet, 1, headers.Cast<object?>().ToArray()); Header(sheet.Range(1, 1, 1, headers.Length)); var today = DateOnly.FromDateTime(DateTime.UtcNow);
         for (var index = 0; index < passengers.Count; index++)
         {
             var p = passengers[index]; var state = BusinessRules.CalculatePassenger(p, today, evidence.GetValueOrDefault(p.Id) ?? new PassengerEvidenceState()); var row = index + 2;
+            var flights = p.PassengerFlights.OrderBy(x => x.FlightBooking.Airline).ThenBy(x => x.FlightBooking.Pnr).ToArray();
             Row(sheet, row, p.FullName, Status(state, "passport"), p.PrimaryOperator?.Name, p.RoomReservation?.InternalCode,
-                PassengerQueryService.MaskPassport(p.PassportNumber), Status(state, "documentation"), Status(state, "room"), Status(state, "flight"), Status(state, "baggage"),
-                state.ProgressPercent, p.NextAction, p.NextActionDueDate, p.Notes); sheet.Cell(row, 12).Style.DateFormat.Format = "dd/mm/yyyy";
+                PassengerQueryService.MaskPassport(p.PassportNumber), JoinFlights(flights, x => x.FlightBooking.Airline),
+                JoinFlights(flights, x => x.FlightBooking.Pnr), JoinFlights(flights, x => VerificationLabel(x.TicketStatus)),
+                JoinFlights(flights, x => x.ElectronicTicketNumber), Status(state, "documentation"), Status(state, "room"),
+                Status(state, "flight"), Status(state, "baggage"), state.ProgressPercent, p.NextAction, p.NextActionDueDate, p.Notes);
+            sheet.Cell(row, 16).Style.DateFormat.Format = "dd/mm/yyyy";
+            sheet.Range(row, 6, row, 9).Style.Alignment.WrapText = true;
         }
         if (passengers.Count > 0) sheet.Range(1, 1, passengers.Count + 1, headers.Length).CreateTable("PassengerControl");
         sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
@@ -130,6 +144,11 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
     private static string Status(PassengerComputedState state, string key) => VerificationLabel(state.Requirements.Single(x => x.Key == key).Status);
     private static string VerificationLabel(VerificationStatus status) => status switch { VerificationStatus.Confirmed => "Confirmado", VerificationStatus.ToVerify => "Por verificar", VerificationStatus.InProgress => "En gestión", VerificationStatus.NotIncluded => "No incluido", VerificationStatus.NotApplicable => "No aplica", _ => status.ToString() };
     private static string OverallLabel(PassengerOverallStatus status) => status switch { PassengerOverallStatus.Ready => "Listo", PassengerOverallStatus.Pending => "Pendiente", PassengerOverallStatus.Attention => "Atención", _ => status.ToString() };
+    private static string? JoinFlights(IEnumerable<PassengerFlight> flights, Func<PassengerFlight, string?> selector)
+    {
+        var values = flights.Select(selector).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
+        return values.Length == 0 ? null : string.Join("\n", values);
+    }
     private static int Percent(int value, int total) => total == 0 ? 0 : (int)Math.Round(value * 100m / total);
     private static string Csv(string? value) => $"\"{(value ?? "").Replace("\"", "\"\"")}\"";
 }

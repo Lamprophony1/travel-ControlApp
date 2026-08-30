@@ -18,7 +18,7 @@ Dashboard: nombre y destino del viaje, conteos, porcentaje, cinco categorías, r
 
 Pasajero: ID, nombre según `NameMode`, operadora, código interno, hotel/propiedad, tipo, check-in/check-out, estado general, porcentaje, los cinco estados, nombres genéricos de faltantes, alertas sanitizadas y transfer booleano.
 
-Nunca se emiten las claves `passportNumber`, `maskedPassport`, `birthDate`, `nationality`, `passportExpiry`, `phone`, `email`, `dietaryRestrictions`, `notes`, `nextAction`, `nextActionDueDate`, `pnr`, `electronicTicketNumber`, `sourceReference`, `operatorContact`, `attachments`, `attachmentId`, `attachmentLinkId`, `linkId`, `evidenceType`, `sourceId`, `managePath`, `affectedPassengerCount`, `ticketVersion`, `updatedById`, `followUps`, `audit`, `updatedBy` o `userName`. Los tests recorren el JSON completo y fallan si aparece alguna.
+La respuesta pública puede incluir únicamente `airline` y `ticketStatus` de cada reserva. Nunca se emiten las claves `passportNumber`, `maskedPassport`, `birthDate`, `nationality`, `passportExpiry`, `phone`, `email`, `dietaryRestrictions`, `notes`, `nextAction`, `nextActionDueDate`, `pnr`, `electronicTicketNumber`, `sourceReference`, `operatorContact`, `attachments`, `attachmentId`, `attachmentLinkId`, `linkId`, `evidenceType`, `sourceId`, `managePath`, `affectedPassengerCount`, `ticketVersion`, `updatedById`, `followUps`, `audit`, `updatedBy` o `userName`. Los tests recorren el JSON completo y fallan si aparece alguna.
 
 La búsqueda pública solo usa nombre normalizado y código interno. Los filtros permitidos son estado general, operadora, requisito y estado del requisito. La página máxima es 50.
 

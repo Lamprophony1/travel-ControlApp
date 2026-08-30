@@ -84,9 +84,10 @@ public static class BusinessRules
 
     public static bool FlightCanBeConfirmed(FlightBooking booking, PassengerFlight passengerFlight, out string[] missing)
     {
-        FlightStructureCanBeConfirmed(booking, out var structureMissing);
-        var values = structureMissing.ToList();
-        if (string.IsNullOrWhiteSpace(passengerFlight.ElectronicTicketNumber)) values.Add("ticket electrónico");
+        var values = new List<string>();
+        if (string.IsNullOrWhiteSpace(booking.Pnr)) values.Add("PNR");
+        if (string.IsNullOrWhiteSpace(booking.Airline)) values.Add("aerolínea");
+        if (passengerFlight.TicketStatus != VerificationStatus.Confirmed) values.Add("estado de ticket confirmado");
         missing = [.. values.Distinct()];
         return missing.Length == 0;
     }
@@ -173,10 +174,9 @@ public static class BusinessRules
             || booking.Segments.Count > 0 || booking.PassengerFlights.Count > 0;
         if (!hasRealData) return VerificationStatus.ToVerify;
         if (string.IsNullOrWhiteSpace(booking.Pnr) || string.IsNullOrWhiteSpace(booking.Airline)
-            || !FlightStructureCanBeConfirmed(booking, out _) || booking.PassengerFlights.Count == 0)
+            || booking.PassengerFlights.Count == 0)
             return VerificationStatus.InProgress;
-        return booking.PassengerFlights.All(link => link.TicketStatus == VerificationStatus.Confirmed
-                && FlightCanBeConfirmed(booking, link, out _))
+        return booking.PassengerFlights.All(link => FlightCanBeConfirmed(booking, link, out _))
             ? VerificationStatus.Confirmed
             : VerificationStatus.InProgress;
     }
@@ -229,8 +229,7 @@ public static class BusinessRules
                 var link = item.FlightBookingId.HasValue
                     ? passenger.PassengerFlights.FirstOrDefault(x => x.FlightBookingId == item.FlightBookingId)
                     : null;
-                var effectiveTicket = link?.TicketStatus == VerificationStatus.Confirmed
-                    && FlightCanBeConfirmed(link.FlightBooking, link, out _);
+                var effectiveTicket = link is not null && FlightCanBeConfirmed(link.FlightBooking, link, out _);
                 var valid = BaggageCanBeConfirmed(item, effectiveTicket, out var missing);
                 return new RequirementState("baggage", valid ? VerificationStatus.Confirmed : VerificationStatus.ToVerify,
                     "Maleta de 23 kg", JoinMissing(missing));

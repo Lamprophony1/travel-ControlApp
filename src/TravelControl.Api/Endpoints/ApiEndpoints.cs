@@ -85,7 +85,7 @@ public static class ApiEndpoints
     {
         var group = api.MapGroup("/passengers");
         group.MapGet("/", async (string? search, string? passport, string? pnr, string? ticket, string? groupCode,
-            string? operatorName, string? overall, string? requirement, string? status, bool? propertyPending, bool? overdue,
+            string? operatorName, string? airline, string? overall, string? requirement, string? status, bool? propertyPending, bool? overdue,
             string? sortBy, string? sortDirection, int page, int pageSize, PassengerQueryService service, CancellationToken ct) =>
         {
             page = Math.Max(1, page); pageSize = Math.Clamp(pageSize == 0 ? 25 : pageSize, 1, 100);
@@ -108,6 +108,10 @@ public static class ApiEndpoints
             if (!string.IsNullOrWhiteSpace(ticket)) query = query.Where(x => x.PassengerFlights.Any(f => f.ElectronicTicketNumber != null && f.ElectronicTicketNumber.Contains(ticket)));
             if (!string.IsNullOrWhiteSpace(groupCode)) query = query.Where(x => x.RoomReservation != null && x.RoomReservation.InternalCode.Contains(groupCode));
             if (!string.IsNullOrWhiteSpace(operatorName)) query = query.Where(x => x.PrimaryOperator != null && x.PrimaryOperator.Name == operatorName);
+            if (string.Equals(airline, "none", StringComparison.OrdinalIgnoreCase))
+                query = query.Where(x => x.PassengerFlights.All(f => f.FlightBooking.Airline == null || f.FlightBooking.Airline == ""));
+            else if (!string.IsNullOrWhiteSpace(airline))
+                query = query.Where(x => x.PassengerFlights.Any(f => f.FlightBooking.Airline != null && f.FlightBooking.Airline.Contains(airline)));
             if (propertyPending == true) query = query.Where(x => x.RoomReservation != null && x.RoomReservation.SpecificPropertyPending);
             if (overdue == true)
             {
@@ -671,6 +675,49 @@ public static class ApiEndpoints
         });
         imports.MapGet("/identification/quality", async (IdentificationImportService service, CancellationToken ct) =>
             Results.Ok(await service.GetQualityAsync(ct)));
+        imports.MapPost("/passenger-travel/preview", async (HttpRequest request,
+            PassengerTravelManifestImportService service, CancellationToken ct) =>
+        {
+            var form = await request.ReadFormAsync(ct);
+            var file = form.Files.GetFile("file");
+            if (file is null) return Results.BadRequest(new { message = "Adjuntá un archivo CSV o XLSX." });
+            var overwriteIdentity = bool.TryParse(form["overwriteExistingIdentity"], out var overwrite) && overwrite;
+            var replaceFlights = bool.TryParse(form["replaceConflictingFlightAssignments"], out var replace) && replace;
+            try
+            {
+                var aliases = ParseAliases(form["aliasesJson"]);
+                await using var stream = file.OpenReadStream();
+                var result = await service.PreviewAsync(stream, file.FileName, overwriteIdentity, replaceFlights, aliases, ct);
+                return Results.Ok(result);
+            }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+            catch (JsonException) { return Results.BadRequest(new { message = "La selección manual de coincidencias no es válida." }); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            { return Results.BadRequest(new { message = "El archivo de actualización no se pudo leer." }); }
+        });
+        imports.MapPost("/passenger-travel/commit", async (HttpRequest request,
+            PassengerTravelManifestImportService service, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            var form = await request.ReadFormAsync(ct);
+            var file = form.Files.GetFile("file");
+            if (file is null) return Results.BadRequest(new { message = "Adjuntá un archivo CSV o XLSX." });
+            var overwriteIdentity = bool.TryParse(form["overwriteExistingIdentity"], out var overwrite) && overwrite;
+            var replaceFlights = bool.TryParse(form["replaceConflictingFlightAssignments"], out var replace) && replace;
+            var confirmed = bool.TryParse(form["confirmAuthoritativeUpdate"], out var authoritative) && authoritative;
+            var previewHash = form["previewHash"].ToString();
+            try
+            {
+                var aliases = ParseAliases(form["aliasesJson"]);
+                await using var stream = file.OpenReadStream();
+                var result = await service.CommitAsync(stream, file.FileName, previewHash, overwriteIdentity,
+                    replaceFlights, confirmed, aliases, UserId(user), user.Identity?.Name, ct);
+                return result.CanCommit ? Results.Ok(result) : Results.BadRequest(result);
+            }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+            catch (JsonException) { return Results.BadRequest(new { message = "La selección manual de coincidencias no es válida." }); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            { return Results.BadRequest(new { message = "La actualización no se pudo confirmar." }); }
+        });
         imports.MapGet("/", async (AppDbContext db, CancellationToken ct) => Results.Ok((await db.ImportRuns.AsNoTracking().ToListAsync(ct)).OrderByDescending(x => x.CreatedAt).Take(50)));
         var exports = api.MapGroup("/exports");
         exports.MapGet("/control.xlsx", async (ExcelExportService service, CancellationToken ct) => Results.File(await service.ExportAsync(ct), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"control-viaje-{DateTime.UtcNow:yyyyMMdd}.xlsx"));
@@ -882,6 +929,9 @@ public static class ApiEndpoints
         _ => "Evidencia relacionada"
     };
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static IReadOnlyDictionary<int, Guid> ParseAliases(string? json) => string.IsNullOrWhiteSpace(json)
+        ? new Dictionary<int, Guid>()
+        : JsonSerializer.Deserialize<Dictionary<int, Guid>>(json) ?? new Dictionary<int, Guid>();
     private static string? Mask(string? value) => string.IsNullOrWhiteSpace(value) ? null : $"***{value[^Math.Min(3, value.Length)..]}";
     private static async Task Audit(AppDbContext db, ClaimsPrincipal user, string entity, Guid? passengerId, object id, string action, object? before, object? after, CancellationToken ct)
     {

@@ -26,6 +26,18 @@ interface IdentificationQuality {
   totalPassengers: number; completePassports: number; incompletePassports: number
   birthDates: number; nationalities: number; passportExpiries: number; duplicatePassports: number
 }
+interface PassengerTravelIssue { level:string;row?:number;field?:string;message:string;maskedExample?:string }
+interface PassengerTravelSuggestion { row:number;passengerId:string;maskedCandidate:string }
+interface PassengerTravelSummary {
+  rowsRead:number;matchedPassengers:number;unmatchedPassengers:number;ambiguousMatches:number;createdPassengers:number;deletedPassengers:number
+  identityFieldsToComplete:number;identityFieldsToUpdate:number;passportConflicts:number;pnrsToCreate:number;pnrsToUpdate:number
+  associationsToCreate:number;existingAssociations:number;conflictingAssociations:number;ticketsToConfirm:number
+  confirmedTicketPassengers:number;passengersWithoutTicket:number;airlinesDetected:Record<string,number>;ignoredSecondaryDates:number
+  blockingErrors:number;warnings:number;sha256:string;canCommit:boolean;issues:PassengerTravelIssue[];suggestedMatches:PassengerTravelSuggestion[]
+  sourcePassengersWithPnr:number;sourcePassengersWithoutPnr:number;uniquePnrs:number;passportsProvided:number;birthDatesProvided:number
+  passportExpiriesProvided:number;nationalitiesProvided:number;importRunId?:string;pnrsCreated:number;pnrsUpdated:number
+  associationsCreated:number;passportsUpdated:number;birthDatesUpdated:number;passportExpiriesUpdated:number;nationalitiesUpdated:number
+}
 
 export function ImportExportPage() {
   const client = useQueryClient()
@@ -40,6 +52,14 @@ export function ImportExportPage() {
   const [overwriteExisting, setOverwriteExisting] = useState(false)
   const [confirmOverwrite, setConfirmOverwrite] = useState(false)
   const [sheetName, setSheetName] = useState('')
+  const [travelFile, setTravelFile] = useState<File>()
+  const [travel, setTravel] = useState<PassengerTravelSummary>()
+  const [travelBusy, setTravelBusy] = useState(false)
+  const [travelError, setTravelError] = useState('')
+  const [overwriteTravelIdentity, setOverwriteTravelIdentity] = useState(false)
+  const [replaceTravelFlights, setReplaceTravelFlights] = useState(false)
+  const [confirmTravelUpdate, setConfirmTravelUpdate] = useState(false)
+  const [travelAliases, setTravelAliases] = useState<Record<number,string>>({})
   const quality = useQuery({ queryKey: ['identification-quality'], queryFn: () => api<IdentificationQuality>('/api/imports/identification/quality') })
 
   const sendMaster = async (commit: boolean) => {
@@ -72,9 +92,67 @@ export function ImportExportPage() {
     } catch (reason) { setIdentificationError(reason instanceof Error ? reason.message : 'Falló la importación de identificación.') }
     finally { setIdentificationBusy(false) }
   }
+  const sendPassengerTravel = async (commit: boolean) => {
+    if (!travelFile) return
+    setTravelBusy(true); setTravelError('')
+    try {
+      const form = new FormData()
+      form.append('file', travelFile)
+      form.append('overwriteExistingIdentity', String(overwriteTravelIdentity))
+      form.append('replaceConflictingFlightAssignments', String(replaceTravelFlights))
+      form.append('aliasesJson', JSON.stringify(travelAliases))
+      if (commit) {
+        form.append('previewHash', travel?.sha256??'')
+        form.append('confirmAuthoritativeUpdate', String(confirmTravelUpdate))
+      }
+      const result = await api<PassengerTravelSummary>(`/api/imports/passenger-travel/${commit?'commit':'preview'}`, {method:'POST',body:form})
+      setTravel(result)
+      if (commit && result.importRunId) await Promise.all([
+        client.invalidateQueries({queryKey:['dashboard']}),client.invalidateQueries({queryKey:['passengers']}),
+        client.invalidateQueries({queryKey:['public']}),client.invalidateQueries({queryKey:['identification-quality']}),
+      ])
+    } catch (reason) { setTravelError(reason instanceof Error ? reason.message : 'Falló la actualización de pasajeros y tickets.') }
+    finally { setTravelBusy(false) }
+  }
+  const selectTravelAlias=(row:number,passengerId:string,selected:boolean)=>setTravelAliases(current=>{
+    const next={...current};if(selected)next[row]=passengerId;else if(next[row]===passengerId)delete next[row];return next
+  })
 
   return <Stack spacing={3}>
     <Box><Typography variant="h1">Importar y exportar</Typography><Typography color="text.secondary">Las vistas previas no modifican datos. Revisá advertencias antes de confirmar.</Typography></Box>
+
+    <Card>
+      <CardContent>
+        <Typography variant="h2">Actualización de pasajeros y tickets</Typography>
+        <Typography color="text.secondary" mt={.5}>Actualiza identidad no vacía y confirma reservas sobre pasajeros existentes. Nunca crea o elimina personas, habitaciones ni itinerarios.</Typography>
+        <Button component="label" startIcon={<UploadFileIcon/>} variant="outlined" sx={{my:2,minHeight:44}}>Elegir CSV o XLSX privado<input hidden type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event=>{setTravelFile(event.target.files?.[0]);setTravel(undefined);setTravelAliases({});setConfirmTravelUpdate(false)}}/></Button>
+        {travelFile&&<Alert severity="info">Archivo privado seleccionado · {(travelFile.size/1024).toFixed(1)} KB. El contenido no se registra en logs.</Alert>}
+        <Stack mt={2} spacing={1}>
+          <FormControlLabel control={<Checkbox checked={overwriteTravelIdentity} onChange={event=>{setOverwriteTravelIdentity(event.target.checked);setTravel(undefined);setConfirmTravelUpdate(false)}}/>} label="Confirmo que los valores personales no vacíos de esta fuente pueden sobrescribir valores existentes"/>
+          <FormControlLabel control={<Checkbox checked={replaceTravelFlights} onChange={event=>{setReplaceTravelFlights(event.target.checked);setTravel(undefined);setConfirmTravelUpdate(false)}}/>} label="Confirmo agregar las nuevas reservas detectadas conservando las asignaciones aéreas existentes"/>
+        </Stack>
+        {travelError&&<Alert severity="error" sx={{mt:2}}>{travelError}</Alert>}
+        <Stack direction={{xs:'column',sm:'row'}} alignItems={{sm:'center'}} gap={1} mt={2}>
+          <Button variant="contained" disabled={!travelFile||travelBusy} onClick={()=>void sendPassengerTravel(false)}>Vista previa</Button>
+          {travel?.canCommit&&<Button color="success" variant="contained" disabled={travelBusy||!confirmTravelUpdate} onClick={()=>void sendPassengerTravel(true)}>Confirmar actualización</Button>}
+          {travelBusy&&<CircularProgress size={28}/>}
+        </Stack>
+        {travel&&<Box mt={3}><Divider/><Typography variant="h2" mt={2}>Resultado sanitizado</Typography>
+          <Box sx={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))',gap:1.5,my:2}}>
+            <Metric label="Filas leídas" value={travel.rowsRead}/><Metric label="Pasajeros encontrados" value={travel.matchedPassengers}/><Metric label="Sin coincidencia" value={travel.unmatchedPassengers}/><Metric label="Coincidencias ambiguas" value={travel.ambiguousMatches}/>
+            <Metric label="PNR únicos" value={travel.uniquePnrs}/><Metric label="PNR a crear" value={travel.pnrsToCreate}/><Metric label="PNR a actualizar" value={travel.pnrsToUpdate}/><Metric label="Asociaciones a crear" value={travel.associationsToCreate}/>
+            <Metric label="Tickets confirmados esperados" value={travel.confirmedTicketPassengers} total={travel.rowsRead}/><Metric label="Tickets pendientes" value={travel.passengersWithoutTicket}/><Metric label="Pasaportes informados" value={travel.passportsProvided}/><Metric label="Nacimientos informados" value={travel.birthDatesProvided}/><Metric label="Vencimientos informados" value={travel.passportExpiriesProvided}/><Metric label="Nacionalidades informadas" value={travel.nationalitiesProvided}/>
+          </Box>
+          <Alert severity="info">SHA-256 revisado: <Box component="span" fontFamily="monospace" sx={{wordBreak:'break-all'}}>{travel.sha256}</Box></Alert>
+          <Stack direction={{xs:'column',sm:'row'}} gap={1} mt={1} flexWrap="wrap">{Object.entries(travel.airlinesDetected).map(([name,count])=><Alert key={name} severity="info">{name}: {count} pasajeros</Alert>)}</Stack>
+          {travel.suggestedMatches.length>0&&<Box mt={2}><Alert severity="warning">Las sugerencias no se aplican automáticamente. Confirmá cada alias y repetí la vista previa.</Alert><List dense>{travel.suggestedMatches.map(suggestion=><ListItem key={`${suggestion.row}-${suggestion.passengerId}`}><FormControlLabel control={<Checkbox checked={travelAliases[suggestion.row]===suggestion.passengerId} onChange={event=>selectTravelAlias(suggestion.row,suggestion.passengerId,event.target.checked)}/>} label={`Fila ${suggestion.row}: usar candidato ${suggestion.maskedCandidate}`}/></ListItem>)}</List><Button variant="outlined" disabled={travelBusy} onClick={()=>void sendPassengerTravel(false)}>Revisar coincidencias seleccionadas</Button></Box>}
+          {travel.blockingErrors>0&&<Alert severity="error" sx={{mt:2}}>Hay {travel.blockingErrors} errores bloqueantes. No se puede confirmar.</Alert>}
+          {travel.canCommit&&!travel.importRunId&&<FormControlLabel sx={{mt:2}} control={<Checkbox checked={confirmTravelUpdate} onChange={event=>setConfirmTravelUpdate(event.target.checked)}/>} label="Confirmo administrativamente esta actualización autoritativa con el mismo hash"/>}
+          {travel.importRunId&&<Alert severity="success" sx={{mt:2}}>Actualización confirmada y auditada.</Alert>}
+          <List dense>{travel.issues.map((issue,index)=><ListItem key={`${issue.row}-${issue.field}-${index}`}><ListItemText primary={issue.message} secondary={`${issue.level}${issue.row?` · fila ${issue.row}`:''}${issue.field?` · ${issue.field}`:''}${issue.maskedExample?` · ${issue.maskedExample}`:''}`} primaryTypographyProps={{color:issue.level==='Error'?'error.main':'warning.main'}}/></ListItem>)}</List>
+        </Box>}
+      </CardContent>
+    </Card>
 
     <Card>
       <CardContent>

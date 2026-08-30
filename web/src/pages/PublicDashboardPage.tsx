@@ -6,7 +6,7 @@ import { api } from '../api'
 import { ErrorState, LoadingState } from '../components/LoadingState'
 import { StatusChip } from '../components/StatusChip'
 import type { PublicDashboard } from '../types'
-import { pendingPassengerDestination } from './publicDashboardNavigation'
+import { publicPendingAction } from './publicDashboardNavigation'
 
 function kpiDestination(key: string) {
   const destinations: Record<string, string> = {
@@ -30,6 +30,11 @@ export function PublicDashboardPage() {
   if (query.error) return <ErrorState error={query.error} retry={() => void query.refetch()} />
 
   const data = query.data!
+  const pendingAction = publicPendingAction(data)
+  const followPendingAction = () => {
+    if (pendingAction.destination) navigate(pendingAction.destination)
+    else if (pendingAction.anchor) document.getElementById(pendingAction.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
   const hasMissing = Object.values(data.missing).some(value => typeof value === 'boolean' ? value : value > 0) || data.alerts.length > 0
   const missing = [
     data.missing.tickets > 0 && `${data.missing.tickets} tickets pendientes`,
@@ -49,7 +54,7 @@ export function PublicDashboardPage() {
     </Box>
 
     {hasMissing
-      ? <Alert severity="error" variant="filled" action={<Button color="inherit" endIcon={<ArrowForwardIcon />} onClick={() => navigate(pendingPassengerDestination(data))}>Ver pasajeros pendientes</Button>}>
+      ? <Alert severity="error" variant="filled" action={<Button color="inherit" endIcon={<ArrowForwardIcon />} onClick={followPendingAction}>{pendingAction.label}</Button>}>
           <Typography fontWeight={900}>Todavía faltan entregables para cerrar el viaje</Typography>
           <Typography>{missing.join(' · ')}</Typography>
         </Alert>
@@ -61,7 +66,7 @@ export function PublicDashboardPage() {
     <Paper sx={{ p: { xs: 2.5, sm: 3 } }}>
       <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={2}>
         <Box><Typography variant="h2">Avance global</Typography><Typography variant="h3" fontWeight={900} mt={1}>{data.progressPercent}%</Typography></Box>
-        <StatusChip status={hasMissing ? 'Attention' : 'Ready'} size="medium" />
+        <StatusChip status={data.overallStatus} size="medium" />
       </Stack>
       <LinearProgress variant="determinate" value={data.progressPercent} color={hasMissing ? 'error' : 'success'} sx={{ height: 12, borderRadius: 6, mt: 2 }} />
     </Paper>
@@ -87,7 +92,7 @@ export function PublicDashboardPage() {
           <Typography variant="caption" color="text.secondary">{category.confirmed} confirmados · {category.notApplicable} no aplica · {category.pending} por verificar · {category.inProgress} en gestión · {category.notIncluded} no incluidos</Typography>
         </Box>)}</Stack>
       </Paper>
-      <Paper sx={{ p: 3 }}>
+      <Paper id="accommodation-status" tabIndex={-1} sx={{ p: 3, scrollMarginTop: 80 }}>
         <Typography variant="h2" mb={2}>Por operadora</Typography>
         <Stack spacing={2}>{data.operators.map(operator => <Box key={operator.name}>
           <Typography fontWeight={850}>{operator.name}</Typography>
@@ -96,6 +101,13 @@ export function PublicDashboardPage() {
         </Box>)}</Stack>
       </Paper>
     </Box>
+    <Paper id="transfer-status" tabIndex={-1} sx={{ p: 3, scrollMarginTop: 80 }}>
+      <Typography variant="h2">Transfer grupal</Typography>
+      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ sm: 'center' }} gap={1} mt={1}>
+        <Typography color="text.secondary">Estado informativo; la confirmación se administra en el acceso privado.</Typography>
+        <StatusChip status={data.transferConfirmed ? 'Confirmed' : 'ToVerify'} />
+      </Stack>
+    </Paper>
     <Typography variant="caption" color="text.secondary">Última actualización operativa: {new Date(data.updatedAt).toLocaleString('es-PY')}. Control preventivo; verificar requisitos migratorios en fuentes oficiales.</Typography>
   </Stack>
 }

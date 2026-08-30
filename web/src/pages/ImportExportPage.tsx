@@ -2,7 +2,7 @@ import DownloadIcon from '@mui/icons-material/Download'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import {
   Alert, Box, Button, Card, CardContent, Checkbox, CircularProgress, Divider,
-  FormControlLabel, List, ListItem, ListItemText, Stack, Switch, Typography,
+  FormControlLabel, List, ListItem, ListItemText, MenuItem, Stack, Switch, TextField, Typography,
 } from '@mui/material'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -18,6 +18,8 @@ interface IdentificationSummary {
   rowsRead: number; matched: number; unmatched: number; duplicates: number; unchanged: number
   missingFields: number; conflicts: number; invalidDates: number; duplicatePassports: number
   blockingErrors: number; warnings: number; willUpdate: number; willOverwrite: number
+  selectedSheet?: string; candidateSheets?: string[]; expiredPassports: number; expiriesBeforeReturn: number
+  expiriesWithinWarningThreshold: number; temporallyInconsistentRows: number
   canCommit: boolean; issues: IdentificationIssue[]; importRunId?: string
 }
 interface IdentificationQuality {
@@ -37,6 +39,7 @@ export function ImportExportPage() {
   const [identificationError, setIdentificationError] = useState('')
   const [overwriteExisting, setOverwriteExisting] = useState(false)
   const [confirmOverwrite, setConfirmOverwrite] = useState(false)
+  const [sheetName, setSheetName] = useState('')
   const quality = useQuery({ queryKey: ['identification-quality'], queryFn: () => api<IdentificationQuality>('/api/imports/identification/quality') })
 
   const sendMaster = async (commit: boolean) => {
@@ -55,6 +58,7 @@ export function ImportExportPage() {
       const form = new FormData()
       form.append('file', identificationFile)
       form.append('overwriteExisting', String(overwriteExisting))
+      if (sheetName) form.append('sheetName', sheetName)
       if (commit) form.append('confirmOverwrite', String(confirmOverwrite))
       const result = await api<IdentificationSummary>(`/api/imports/identification/${commit ? 'commit' : 'preview'}`, { method: 'POST', body: form })
       setIdentification(result)
@@ -78,9 +82,10 @@ export function ImportExportPage() {
         <Typography color="text.secondary" mt={.5}>Completa pasaporte, nacimiento, nacionalidad y vencimiento sobre pasajeros existentes. Nunca crea ni elimina personas.</Typography>
         <Button component="label" startIcon={<UploadFileIcon />} variant="outlined" sx={{ my: 2 }}>
           Elegir XLSX de identificación
-          <input hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => { setIdentificationFile(event.target.files?.[0]); setIdentification(undefined); setConfirmOverwrite(false) }} />
+          <input hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => { setIdentificationFile(event.target.files?.[0]); setIdentification(undefined); setConfirmOverwrite(false); setSheetName('') }} />
         </Button>
         {identificationFile && <Alert severity="info">{identificationFile.name} · {(identificationFile.size / 1024).toFixed(1)} KB</Alert>}
+        {(identification?.candidateSheets?.length??0)>1&&<TextField select fullWidth sx={{mt:2}} label="Hoja de identificación" value={sheetName} onChange={event=>setSheetName(event.target.value)}><MenuItem value="">Selección automática</MenuItem>{identification!.candidateSheets!.map(name=><MenuItem key={name} value={name}>{name}</MenuItem>)}</TextField>}
         <Stack mt={2}>
           <FormControlLabel control={<Switch checked={overwriteExisting} onChange={event => { setOverwriteExisting(event.target.checked); setIdentification(undefined); setConfirmOverwrite(false) }} />} label={overwriteExisting ? 'Sobrescribir valores existentes' : 'Completar solo campos vacíos'} />
           {overwriteExisting && <Alert severity="warning">La vista previa indicará exactamente cuántos valores productivos se sobrescribirán.</Alert>}
@@ -100,7 +105,12 @@ export function ImportExportPage() {
             <Metric label="Conflictos" value={identification.conflicts} /><Metric label="Fechas inválidas" value={identification.invalidDates} />
             <Metric label="Pasaportes duplicados" value={identification.duplicatePassports} /><Metric label="Pasajeros a actualizar" value={identification.willUpdate} />
             <Metric label="Valores a sobrescribir" value={identification.willOverwrite} />
+            <Metric label="Pasaportes vencidos" value={identification.expiredPassports} />
+            <Metric label="Vencen antes del regreso" value={identification.expiriesBeforeReturn} />
+            <Metric label="Dentro del umbral" value={identification.expiriesWithinWarningThreshold} />
+            <Metric label="Filas temporalmente incoherentes" value={identification.temporallyInconsistentRows} />
           </Box>
+          {identification.selectedSheet&&<Alert severity="info">Hoja seleccionada: {identification.selectedSheet}. Control preventivo interno; verificar requisitos migratorios oficiales.</Alert>}
           {identification.blockingErrors > 0 && <Alert severity="error">Hay {identification.blockingErrors} errores bloqueantes. Corregí el archivo y repetí la vista previa.</Alert>}
           {overwriteExisting && identification.willOverwrite > 0 && <FormControlLabel sx={{ mt: 1 }} control={<Checkbox checked={confirmOverwrite} onChange={event => setConfirmOverwrite(event.target.checked)} />} label={`Confirmo administrativamente la sobrescritura de ${identification.willOverwrite} valores`} />}
           {identification.importRunId && <Alert severity="success" sx={{ mt: 1 }}>Importación confirmada. ID {identification.importRunId}</Alert>}
@@ -134,11 +144,11 @@ export function ImportExportPage() {
         <Stack direction="row" gap={1} mt={2}><Button variant="contained" disabled={!file || busy} onClick={() => void sendMaster(false)}>Vista previa</Button>{summary?.canCommit && <Button color="success" variant="contained" disabled={busy} onClick={() => void sendMaster(true)}>Confirmar importación</Button>}{busy && <CircularProgress size={28} />}</Stack>
         {summary && <Box mt={3}><Divider /><Typography variant="h2" mt={2}>Resultado</Typography><Typography>{summary.passengerRows} pasajeros · {summary.roomRows} habitaciones</Typography><Typography>{summary.added} altas · {summary.updated} actualizaciones · {summary.unchanged} sin cambios · {summary.errors} errores</Typography>{summary.importRunId && <Alert severity="success" sx={{ mt: 1 }}>Importación confirmada. ID {summary.importRunId}</Alert>}<List>{summary.issues.map((issue, index) => <ListItem key={index}><ListItemText primary={issue.message} secondary={`${issue.level} · ${issue.sheet}${issue.row ? ` · fila ${issue.row}` : ''}`} primaryTypographyProps={{ color: issue.level === 'Error' ? 'error.main' : issue.level === 'Advertencia' ? 'warning.main' : 'text.primary' }} /></ListItem>)}</List></Box>}
       </CardContent></Card>
-      <Card><CardContent><Typography variant="h2">Exportaciones</Typography><Typography color="text.secondary" mb={2}>Los archivos se generan desde la base de datos actual.</Typography><Stack spacing={1.5}><Button href="/api/exports/control.xlsx" startIcon={<DownloadIcon />} variant="contained">Descargar control XLSX</Button><Button href="/api/exports/passengers.csv" startIcon={<DownloadIcon />} variant="outlined">Pasajeros CSV</Button><Button href="/api/exports/pending.xlsx" startIcon={<DownloadIcon />} variant="outlined">Reporte de pendientes XLSX</Button><Button href="/api/exports/backup.json" startIcon={<DownloadIcon />} variant="outlined">Respaldo JSON (admin)</Button></Stack><Alert severity="info" sx={{ mt: 3 }}>El control incluye Dashboard, Control pasajeros, Habitaciones y Fuentes y uso. Los pasaportes permanecen enmascarados.</Alert></CardContent></Card>
+      <Card><CardContent><Typography variant="h2">Exportaciones</Typography><Typography color="text.secondary" mb={2}>Los archivos se generan desde la base de datos actual.</Typography><Stack spacing={1.5}><Button href="/api/exports/control.xlsx" startIcon={<DownloadIcon />} variant="contained">Descargar control XLSX</Button><Button href="/api/exports/passengers.csv" startIcon={<DownloadIcon />} variant="outlined">Pasajeros CSV</Button><Button href="/api/exports/pending.xlsx" startIcon={<DownloadIcon />} variant="outlined">Reporte de pendientes XLSX</Button><Button href="/api/exports/structured.json" startIcon={<DownloadIcon />} variant="outlined">Exportación estructurada JSON (admin)</Button></Stack><Alert severity="info" sx={{ mt: 3 }}>Incluye datos estructurados del viaje. No reemplaza el respaldo completo del servidor y no incluye archivos, claves ni configuración.</Alert></CardContent></Card>
     </Box>
   </Stack>
 }
 
 function Metric({ label, value, total }: { label: string; value: number; total?: number }) {
-  return <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}><Typography variant="caption" color="text.secondary" fontWeight={800}>{label}</Typography><Typography variant="h5" fontWeight={900}>{value}{total !== undefined && <Typography component="span" color="text.secondary" fontSize=".9rem"> / {total}</Typography>}</Typography></Box>
+  return <Box role="group" aria-label={label} sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}><Typography variant="caption" color="text.secondary" fontWeight={800}>{label}</Typography><Typography variant="h5" fontWeight={900}>{value}{total !== undefined && <Typography component="span" color="text.secondary" fontSize=".9rem"> / {total}</Typography>}</Typography></Box>
 }

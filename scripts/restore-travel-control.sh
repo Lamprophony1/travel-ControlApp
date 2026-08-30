@@ -16,7 +16,7 @@ case "${SOURCE_REAL}" in
   *) echo "Backup must be under ${BACKUP_ROOT_REAL}" >&2; exit 1 ;;
 esac
 
-"$(dirname "$0")/verify-backup-artifact.sh" "${SOURCE_REAL}"
+bash "$(dirname "$0")/verify-backup-artifact.sh" "${SOURCE_REAL}"
 
 cd "${APP_ROOT}/deploy"
 docker compose --project-name travel-control stop travel-control

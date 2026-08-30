@@ -15,7 +15,7 @@ tar -czf "${DESTINATION}/persistent-files.tar.gz" --files-from /dev/null
 chmod 600 "${DESTINATION}/travel-control.db" "${DESTINATION}/persistent-files.tar.gz" "${DESTINATION}/SHA256SUMS"
 chmod 700 "${DESTINATION}"
 
-"$(dirname "$0")/verify-backup-artifact.sh" "${DESTINATION}"
+bash "$(dirname "$0")/verify-backup-artifact.sh" "${DESTINATION}"
 [[ "$(stat -c '%A' "${DESTINATION}")" == "drwx------" ]]
 for backup_file in travel-control.db persistent-files.tar.gz SHA256SUMS; do
   [[ "$(stat -c '%A' "${DESTINATION}/${backup_file}")" == "-rw-------" ]]

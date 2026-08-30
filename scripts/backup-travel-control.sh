@@ -47,7 +47,7 @@ chmod 600 "${DESTINATION}/travel-control.db"
 chmod 600 "${DESTINATION}/persistent-files.tar.gz"
 chmod 600 "${DESTINATION}/SHA256SUMS"
 chmod 700 "${DESTINATION}"
-"$(dirname "$0")/verify-backup-artifact.sh" "${DESTINATION}"
+bash "$(dirname "$0")/verify-backup-artifact.sh" "${DESTINATION}"
 
 BACKUP_ROOT_REAL="$(realpath "${BACKUP_ROOT}")"
 while IFS= read -r -d '' candidate; do

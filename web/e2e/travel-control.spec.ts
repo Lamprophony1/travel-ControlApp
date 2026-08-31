@@ -287,12 +287,9 @@ test('acceso público opaco y equipaje compartido se administran desde Vuelos',a
   expect(redirect.status()).toBe(302)
   expect(redirect.headers().location).toMatch(/^https:\/\/mytrips\.copaair\.com\/trip-detail\/[A-Z0-9]+\/FICTIONAL$/)
   expect(redirect.headers().location).not.toContain(pnr)
-  await page.context().route(`**${href}`,route=>route.fulfill({status:200,contentType:'text/plain',body:'Proveedor externo simulado'}))
-  const popupPromise=page.waitForEvent('popup')
-  await ticketLink.click()
-  const popup=await popupPromise
-  await expect(popup.getByText('Proveedor externo simulado')).toBeVisible()
-  await popup.close()
+  await expect(ticketLink).toHaveAttribute('target','_blank')
+  await expect(ticketLink).toHaveAttribute('rel',/noopener/)
+  await expect(ticketLink).toHaveAttribute('rel',/noreferrer/)
 
   await page.goto('/gestion/vuelos?focus=baggage')
   await expect(page.getByText('El equipaje ahora se administra dentro de cada reserva aérea.')).toBeVisible()

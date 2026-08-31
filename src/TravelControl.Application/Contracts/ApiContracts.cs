@@ -5,7 +5,7 @@ namespace TravelControl.Application.Contracts;
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Page, int PageSize, int Total);
 public sealed record PassengerFlightSummary(Guid FlightBookingId, string? Airline, string? Pnr,
-    VerificationStatus TicketStatus, bool HasDetailedItinerary);
+    VerificationStatus TicketStatus, TicketAccessStatus TicketAccessStatus, bool HasDetailedItinerary);
 public sealed record PassengerListItem(Guid Id, string FullName, string MaskedPassport, PassportStatus PassportStatus,
     string? Operator, string? RoomCode, string? Hotel, string? RoomType, DateOnly? CheckIn, DateOnly? CheckOut, int? Nights,
     VerificationStatus DocumentationStatus, PassengerOverallStatus OverallStatus, int ProgressPercent,
@@ -30,8 +30,8 @@ public sealed record CreatePassengerRequest(string FullName, DateOnly? BirthDate
     DateOnly? PassportExpiry, string? Phone, string? Email, Guid? PrimaryOperatorId, Guid? RoomReservationId,
     string? NextAction, DateOnly? NextActionDueDate, string? DietaryRestrictions, string? Notes);
 public sealed record UpdatePassengerRequest(string FullName, DateOnly? BirthDate, string? Nationality, string? PassportNumber,
-    DateOnly? PassportExpiry, VerificationStatus PassportReviewStatus, VerificationStatus DocumentationStatus,
-    string? DocumentationExceptionReason, string? Phone, string? Email, Guid? PrimaryOperatorId, Guid? RoomReservationId,
+    DateOnly? PassportExpiry, VerificationStatus PassportReviewStatus,
+    string? Phone, string? Email, Guid? PrimaryOperatorId, Guid? RoomReservationId,
     string? EstimatedHotelArrival, string? DietaryRestrictions, string? Notes,
     string? NextAction, DateOnly? NextActionDueDate, long Version);
 public sealed record BulkAssignRequest(IReadOnlyList<Guid> PassengerIds, Guid? RoomReservationId, Guid? FlightBookingId,
@@ -54,6 +54,12 @@ public sealed record PassengerTicketRequest(string ElectronicTicketNumber, Verif
 public sealed record BaggageUpdateRequest(Guid PassengerId, Guid? FlightBookingId, VerificationStatus Status, int CheckedBagCount,
     decimal WeightPerBagKg, bool AppliesOutbound, bool AppliesReturn, string? ExceptionReason, string? SourceReference, string? Notes, long Version = 0);
 public sealed record GroupBaggageRequest(Guid FlightBookingId, IReadOnlyList<Guid>? PassengerIds, string? SourceReference, string? Notes);
+public sealed record FlightBaggageRequest(VerificationStatus Status, int CheckedBagCount, decimal CheckedBagWeightKg,
+    bool AppliesOutbound, bool AppliesReturn, string? SourceReference, string? Notes, long Version);
+public sealed record TicketAccessMetadataRequest(string? BookingLookupLastName, string? AirlineOrderId,
+    string? OfficialTicketAccessUrl, bool VerifiedOfficialSource, long Version);
+public sealed record TicketAccessVerificationRequest(bool Verified, long Version);
+public sealed record TicketAccessGenerationRequest(bool Confirm = false);
 public sealed record TripTransferStatusRequest(bool IsConfirmed, string? Notes, long Version);
 public sealed record FollowUpRequest(Guid? TripId, Guid? PassengerId, Guid? RoomReservationId, string Title, string? Description,
     DateOnly? DueDate, FollowUpStatus Status, FollowUpPriority Priority, long Version = 0);

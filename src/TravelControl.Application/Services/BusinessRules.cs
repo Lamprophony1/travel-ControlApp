@@ -23,7 +23,7 @@ public sealed record PassengerEvidenceState(
 public static class BusinessRules
 {
     public const string TopTravelPropertyAlert = "Propiedad específica del hotel pendiente de confirmar con Top Travel";
-    public const string StaleDocumentationAlert = "Confirmación documental desactualizada";
+    public const string StaleDocumentationAlert = "Confirmación documental legacy ignorada";
 
     private static readonly string[] PropertyPlaceholders =
     [
@@ -105,6 +105,18 @@ public static class BusinessRules
         return values.Count == 0;
     }
 
+    public static bool BaggageCanBeConfirmed(FlightBooking booking, out string[] missing)
+    {
+        var values = new List<string>();
+        if (!booking.CheckedBagIncluded) values.Add("maleta incluida");
+        if (booking.CheckedBagCount < 1) values.Add("al menos una maleta");
+        if (booking.CheckedBagWeightKg < 23) values.Add("peso mínimo de 23 kg");
+        if (!booking.BaggageAppliesOutbound) values.Add("ida");
+        if (!booking.BaggageAppliesReturn) values.Add("regreso");
+        missing = [.. values];
+        return values.Count == 0;
+    }
+
     public static PassengerComputedState CalculatePassenger(Passenger passenger, DateOnly today, bool hasAirTicketEvidence = false) =>
         CalculatePassenger(passenger, today, new PassengerEvidenceState(HasAirTicketEvidence: hasAirTicketEvidence));
 
@@ -118,12 +130,8 @@ public static class BusinessRules
 
         var room = EffectiveRoom(passenger.RoomReservation, evidence.HasHotelVoucherEvidence);
         var flight = EffectiveFlight(passenger.PassengerFlights);
-        var baggage = EffectiveBaggage(passenger);
-        var documentationEvidence = evidence.HasAirTicketEvidence
-            || passenger.PassengerFlights.Any(x => !string.IsNullOrWhiteSpace(x.FlightBooking.SourceReference));
-        var documentationDependencies = passenger.PassportReviewStatus == VerificationStatus.Confirmed
-            && IsResolved(room) && IsResolved(flight) && documentationEvidence;
-        var documentation = EffectiveDocumentation(passenger, documentationDependencies);
+        var baggage = EffectiveBaggage(passenger.PassengerFlights);
+        var documentation = EffectiveDocumentation(passenger.PassengerFlights);
 
         var requirements = new[]
         {
@@ -142,8 +150,6 @@ public static class BusinessRules
         if (passenger.RoomReservation is { } assignedRoom && assignedRoom.Passengers.Count > assignedRoom.ExpectedCapacity
             && (!assignedRoom.CapacityOverride || string.IsNullOrWhiteSpace(assignedRoom.CapacityOverrideReason)))
             alerts.Add("Ocupación incompatible con la capacidad");
-        if (passenger.DocumentationStatus == VerificationStatus.Confirmed && !documentationDependencies)
-            alerts.Add(StaleDocumentationAlert);
         if (requirements.Any(x => x.Status == VerificationStatus.NotIncluded)) alerts.Add("Existe un requisito no incluido");
 
         var resolved = requirements.Count(IsResolved);
@@ -216,36 +222,45 @@ public static class BusinessRules
         return Aggregate("flight", "Ticket de vuelo", results);
     }
 
-    private static RequirementState EffectiveBaggage(Passenger passenger)
+    private static RequirementState EffectiveBaggage(IEnumerable<PassengerFlight> passengerFlights)
     {
-        var baggage = passenger.BaggageEntitlements.ToArray();
-        if (baggage.Length == 0) return new("baggage", VerificationStatus.ToVerify, "Maleta de 23 kg", "Falta franquicia de equipaje");
-        var results = baggage.Select(item =>
+        var bookings = passengerFlights.Select(x => x.FlightBooking).DistinctBy(x => x.Id).ToArray();
+        if (bookings.Length == 0) return new("baggage", VerificationStatus.ToVerify, "Maleta de 23 kg", "Falta reserva aérea asociada");
+        var results = bookings.Select(booking =>
         {
-            if (item.Status == VerificationStatus.NotApplicable)
-                return new RequirementState("baggage", VerificationStatus.NotApplicable, "Maleta de 23 kg", item.ExceptionReason);
-            if (item.Status == VerificationStatus.Confirmed)
+            if (booking.BaggageStatus == VerificationStatus.NotApplicable)
+                return new RequirementState("baggage", VerificationStatus.NotApplicable, "Maleta de 23 kg", booking.BaggageNotes);
+            if (booking.BaggageStatus == VerificationStatus.Confirmed)
             {
-                var link = item.FlightBookingId.HasValue
-                    ? passenger.PassengerFlights.FirstOrDefault(x => x.FlightBookingId == item.FlightBookingId)
-                    : null;
-                var effectiveTicket = link is not null && FlightCanBeConfirmed(link.FlightBooking, link, out _);
-                var valid = BaggageCanBeConfirmed(item, effectiveTicket, out var missing);
+                var valid = BaggageCanBeConfirmed(booking, out var missing);
                 return new RequirementState("baggage", valid ? VerificationStatus.Confirmed : VerificationStatus.ToVerify,
                     "Maleta de 23 kg", JoinMissing(missing));
             }
-            return new RequirementState("baggage", item.Status, "Maleta de 23 kg");
+            return new RequirementState("baggage", booking.BaggageStatus, "Maleta de 23 kg");
         }).ToArray();
-        return Aggregate("baggage", "Maleta de 23 kg", results);
+        if (results.Any(x => x.Status == VerificationStatus.NotIncluded))
+            return new("baggage", VerificationStatus.NotIncluded, "Maleta de 23 kg");
+        if (results.Any(x => x.Status == VerificationStatus.ToVerify))
+            return new("baggage", VerificationStatus.ToVerify, "Maleta de 23 kg", results.Select(x => x.Reason).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)));
+        if (results.Any(x => x.Status == VerificationStatus.InProgress))
+            return new("baggage", VerificationStatus.InProgress, "Maleta de 23 kg");
+        if (results.All(x => x.Status == VerificationStatus.NotApplicable))
+            return new("baggage", VerificationStatus.NotApplicable, "Maleta de 23 kg", string.Join("; ", results.Select(x => x.Reason).Where(x => !string.IsNullOrWhiteSpace(x))));
+        return new("baggage", VerificationStatus.Confirmed, "Maleta de 23 kg");
     }
 
-    private static RequirementState EffectiveDocumentation(Passenger passenger, bool dependenciesValid)
+    private static RequirementState EffectiveDocumentation(IEnumerable<PassengerFlight> passengerFlights)
     {
-        if (passenger.DocumentationStatus == VerificationStatus.NotApplicable)
-            return new("documentation", VerificationStatus.NotApplicable, "Documentación", passenger.DocumentationExceptionReason);
-        if (passenger.DocumentationStatus == VerificationStatus.Confirmed && !dependenciesValid)
-            return new("documentation", VerificationStatus.ToVerify, "Documentación", StaleDocumentationAlert);
-        return new("documentation", passenger.DocumentationStatus, "Documentación");
+        var links = passengerFlights.ToArray();
+        if (links.Length == 0)
+            return new("documentation", VerificationStatus.ToVerify, "Documentación", "Falta acceso al ticket");
+        if (links.All(x => x.TicketAccessStatus == TicketAccessStatus.Verified
+            && !string.IsNullOrWhiteSpace(x.TicketAccessUrl)))
+            return new("documentation", VerificationStatus.Confirmed, "Documentación");
+        if (links.All(x => (x.TicketAccessStatus is TicketAccessStatus.Generated or TicketAccessStatus.Verified)
+            && !string.IsNullOrWhiteSpace(x.TicketAccessUrl)))
+            return new("documentation", VerificationStatus.InProgress, "Documentación", "Acceso generado, pendiente de verificar");
+        return new("documentation", VerificationStatus.ToVerify, "Documentación", "Falta acceso verificado al ticket");
     }
 
     private static RequirementState Aggregate(string key, string label, IReadOnlyList<RequirementState> values)

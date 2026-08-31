@@ -90,6 +90,7 @@ builder.Services.AddScoped<PassengerQueryService>();
 builder.Services.AddScoped<TripReadinessService>();
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<PublicReadService>();
+builder.Services.AddScoped<TicketAccessLinkService>();
 builder.Services.AddScoped<AttachmentStorage>();
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 10 * 1024 * 1024);

@@ -41,6 +41,8 @@ public sealed class TripReadinessTests
         var flight = new FlightBooking
         {
             Trip = trip, Airline = "Aerolínea ficticia", Pnr = "PNR-FIXTURE", SourceReference = "Referencia ficticia",
+            BaggageStatus = VerificationStatus.Confirmed, CheckedBagIncluded = true, CheckedBagCount = 1,
+            CheckedBagWeightKg = 23, BaggageAppliesOutbound = true, BaggageAppliesReturn = true,
             Segments =
             [
                 new FlightSegment { Type = SegmentType.Outbound, FlightNumber = "FX1", OriginAirport = "AAA", DestinationAirport = "BBB", DepartureAt = new DateTimeOffset(2026, 9, 1, 10, 0, 0, TimeSpan.Zero), ArrivalAt = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero), Sequence = 1 },
@@ -49,12 +51,9 @@ public sealed class TripReadinessTests
         };
         flight.PassengerFlights.Add(new PassengerFlight
         {
-            Passenger = passenger, ElectronicTicketNumber = "FIXTURE-TICKET", TicketStatus = VerificationStatus.Confirmed
-        });
-        passenger.BaggageEntitlements.Add(new BaggageEntitlement
-        {
-            FlightBooking = flight, Status = VerificationStatus.Confirmed, CheckedBagCount = 1, WeightPerBagKg = 23,
-            AppliesOutbound = true, AppliesReturn = true
+            Passenger = passenger, ElectronicTicketNumber = "FIXTURE-TICKET", TicketStatus = VerificationStatus.Confirmed,
+            TicketAccessStatus = TicketAccessStatus.Verified,
+            TicketAccessUrl = "https://mytrips.copaair.com/trip-detail/ABC123/FICTIONAL"
         });
         db.AddRange(trip, op, room, passenger, flight);
         await db.SaveChangesAsync(ct);

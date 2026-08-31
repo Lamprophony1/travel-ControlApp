@@ -3,8 +3,9 @@
 - `Trip` posee exactamente un `TripTransferStatus` global.
 - `Passenger` conserva datos de viaje, operadora principal, habitación y próxima acción; no tiene responsable interno ni transfer individual.
 - `RoomReservation` agrupa pasajeros bajo un código operativo estable.
-- `FlightBooking` representa un PNR compartido con aerolínea y segmentos opcionales; `PassengerFlight` conserva el estado individual y un número electrónico opcional.
-- `BaggageEntitlement` representa cantidad, peso y cobertura de ida/regreso.
+- `FlightBooking` representa un PNR compartido con aerolínea, segmentos opcionales y una única política de equipaje aplicable a todos sus pasajeros.
+- `PassengerFlight` conserva el estado individual del ticket, un número electrónico opcional y los datos privados del acceso oficial (`BookingLookupLastName`, `AirlineOrderId`, URL, estado y token público opaco).
+- `BaggageEntitlement` es una estructura legacy conservada únicamente para rollback y auditoría. El código nuevo no debe escribirla ni usarla como fuente de verdad.
 - `Attachment`, `FollowUp`, `AuditLog` e `ImportRun` cubren evidencia, seguimiento, trazabilidad e importaciones.
 - `AppUser` usa roles `Administrator`, `Editor` y `Viewer`.
 
@@ -20,4 +21,4 @@ No se persisten noches, avance, estado general ni estados efectivos: se derivan 
 
 `Attachment.DocumentType` y sus asociaciones directas legadas permanecen en el esquema para que una imagen anterior pueda abrir la migración aditiva. Son datos históricos de primera carga, no clasificación autoritativa; su retiro requerirá una migración futura y ventana de rollback cerrada.
 
-`PassengerFlight` conserva la clave compuesta `(PassengerId, FlightBookingId)` y agrega `Version` como token de concurrencia, `UpdatedAt` y `UpdatedById`. Todo vínculo nuevo empieza en versión 1 y cada modificación incrementa la versión.
+`PassengerFlight` conserva la clave compuesta `(PassengerId, FlightBookingId)` y usa `Version` como token de concurrencia. `PublicTicketAccessToken` contiene 32 bytes aleatorios, es único y no codifica IDs, PNR, apellido ni `orderId`. La API pública solo entrega una ruta opaca; la URL real queda en el ámbito privado.

@@ -18,12 +18,33 @@ public static class ApiEndpoints
     public static IEndpointRouteBuilder MapTravelControlApi(this IEndpointRouteBuilder endpoints)
     {
         MapPublic(endpoints);
+        MapTicketRedirect(endpoints);
         MapAuth(endpoints);
         var api = endpoints.MapGroup("/api").RequireAuthorization();
         MapDashboard(api); MapPassengers(api); MapRooms(api); MapFlights(api); MapBaggage(api);
         MapTransfer(api); MapFollowUps(api); MapImportsExports(api); MapAttachments(api);
-        MapUsers(api); MapReference(api); MapAudit(api);
+        MapUsers(api); MapReference(api); MapAudit(api); MapTicketAccess(api);
         return endpoints;
+    }
+
+    private static void MapTicketRedirect(IEndpointRouteBuilder endpoints)
+    {
+        endpoints.MapGet("/ticket/{publicToken}", async (string publicToken, AppDbContext db, HttpContext context, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers.Pragma = "no-cache";
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            var link = await db.PassengerFlights.AsNoTracking()
+                .Where(x => x.PublicTicketAccessToken == publicToken)
+                .Select(x => new { x.TicketAccessStatus, x.TicketAccessUrl, x.FlightBooking.Airline })
+                .SingleOrDefaultAsync(ct);
+            if (link is null) return Results.NotFound();
+            if (link.TicketAccessStatus == TicketAccessStatus.Invalid) return Results.StatusCode(StatusCodes.Status410Gone);
+            if (link.TicketAccessStatus != TicketAccessStatus.Verified
+                || !TicketAccessLinkService.IsSafeOfficialUrlForAirline(link.Airline, link.TicketAccessUrl))
+                return Results.NotFound();
+            return Results.Redirect(link.TicketAccessUrl!, permanent: false, preserveMethod: false);
+        }).AllowAnonymous().RequireRateLimiting("public-read");
     }
 
     private static void MapPublic(IEndpointRouteBuilder endpoints)
@@ -154,17 +175,23 @@ public static class ApiEndpoints
             return Results.Ok(new
             {
                 passenger = new { p.Id, p.FullName, p.BirthDate, p.Nationality, p.PassportExpiry, p.Phone, p.Email, p.EstimatedHotelArrival,
-                    p.DietaryRestrictions, p.Notes, p.NextAction, p.NextActionDueDate, p.PassportReviewStatus, p.DocumentationStatus,
-                    p.DocumentationExceptionReason, p.Version,
+                    p.DietaryRestrictions, p.Notes, p.NextAction, p.NextActionDueDate, p.PassportReviewStatus, p.Version,
                     PrimaryOperator = p.PrimaryOperator is null ? null : new { p.PrimaryOperator.Id, p.PrimaryOperator.Name },
                     RoomReservation = p.RoomReservation is null ? null : new { p.RoomReservation.Id, p.RoomReservation.InternalCode, p.RoomReservation.Hotel,
                         p.RoomReservation.RoomType, p.RoomReservation.CheckIn, p.RoomReservation.CheckOut, p.RoomReservation.Status },
-                    PassengerFlights = p.PassengerFlights.Select(x => new { x.FlightBookingId, x.ElectronicTicketNumber, x.TicketStatus, x.Notes,
-                        x.Version, x.UpdatedAt, x.UpdatedById,
+                    PassengerFlights = p.PassengerFlights.Select(x => new { x.FlightBookingId, x.ElectronicTicketNumber, x.TicketStatus,
+                        x.TicketAccessStatus, x.BookingLookupLastName, x.AirlineOrderId,
+                        HasTicketAccess = x.TicketAccessStatus == TicketAccessStatus.Verified && TicketAccessLinkService.IsSafeOfficialUrl(x.TicketAccessUrl),
+                        TicketAccessPath = x.TicketAccessStatus == TicketAccessStatus.Verified && TicketAccessLinkService.IsSafeOfficialUrl(x.TicketAccessUrl)
+                            ? $"/ticket/{x.PublicTicketAccessToken}" : null,
+                        TicketAccessManagePath = TicketAccessLinkService.IsSafeOfficialUrl(x.TicketAccessUrl)
+                            ? $"/api/ticket-access/{x.FlightBookingId}/{x.PassengerId}/open" : null,
+                        x.Notes, x.Version, x.UpdatedAt, x.UpdatedById,
                         Booking = new { x.FlightBooking.Pnr, x.FlightBooking.Airline, x.FlightBooking.Status, x.FlightBooking.SourceReference,
+                            x.FlightBooking.BaggageStatus, x.FlightBooking.CheckedBagIncluded, x.FlightBooking.CheckedBagCount,
+                            x.FlightBooking.CheckedBagWeightKg, x.FlightBooking.BaggageAppliesOutbound, x.FlightBooking.BaggageAppliesReturn,
+                            x.FlightBooking.BaggageSourceReference, x.FlightBooking.BaggageNotes,
                             Segments = x.FlightBooking.Segments.OrderBy(s => s.Sequence).Select(s => new { s.Id, s.Type, s.FlightNumber, s.OriginAirport, s.DestinationAirport, s.DepartureAt, s.ArrivalAt }) } }),
-                    BaggageEntitlements = p.BaggageEntitlements.Select(x => new { x.Id, x.FlightBookingId, x.Status, x.CheckedBagCount,
-                        x.WeightPerBagKg, x.Includes23Kg, x.AppliesOutbound, x.AppliesReturn, x.ExceptionReason, x.SourceReference, x.Notes, x.Version }),
                     FollowUps = p.FollowUps.Select(x => new { x.Id, x.Title, x.Description, x.DueDate, x.Status, x.Priority, x.Version }) },
                 computed = BusinessRules.CalculatePassenger(p, DateOnly.FromDateTime(DateTime.UtcNow), evidence),
                 maskedPassport = PassengerQueryService.MaskPassport(p.PassportNumber),
@@ -195,33 +222,15 @@ public static class ApiEndpoints
             var validation = await validator.ValidateAsync(req, ct); if (!validation.IsValid) return Validation(validation);
             var entity = await db.Passengers.FindAsync([id], ct); if (entity is null) return Results.NotFound();
             if (entity.Version != req.Version) return Conflict();
-            if (req.DocumentationStatus == VerificationStatus.Confirmed)
-            {
-                var missing = new List<string>();
-                if (req.PassportReviewStatus != VerificationStatus.Confirmed) missing.Add("pasaporte revisado");
-                var links = await db.PassengerFlights.Include(x => x.FlightBooking).ThenInclude(x => x.Segments)
-                    .Where(x => x.PassengerId == id).ToListAsync(ct);
-                if (!links.Any(x => x.TicketStatus == VerificationStatus.Confirmed
-                    && BusinessRules.FlightCanBeConfirmed(x.FlightBooking, x, out _))) missing.Add("ticket efectivo");
-                var room = req.RoomReservationId.HasValue
-                    ? await db.RoomReservations.Include(x => x.Passengers).SingleOrDefaultAsync(x => x.Id == req.RoomReservationId, ct)
-                    : null;
-                var roomEvidence = room is null ? [] : await evidenceResolver.GetRoomEvidenceAsync([room.Id], ct);
-                if (room?.Status != VerificationStatus.Confirmed || !BusinessRules.RoomCanBeConfirmed(room, roomEvidence.Contains(room.Id), out _)) missing.Add("habitación efectiva");
-                var passengerEvidence = (await evidenceResolver.GetForPassengersAsync([id], ct)).GetValueOrDefault(id) ?? new PassengerEvidenceState();
-                if (!passengerEvidence.HasAirTicketEvidence) missing.Add("comprobante o referencia de vuelo");
-                if (missing.Count > 0) return Results.BadRequest(new { message = "No se puede confirmar la documentación.", missing });
-            }
-            var before = new { entity.FullName, passport = PassengerQueryService.MaskPassport(entity.PassportNumber), entity.DocumentationStatus, entity.RoomReservationId, entity.NextAction };
+            var before = new { entity.FullName, passport = PassengerQueryService.MaskPassport(entity.PassportNumber), entity.RoomReservationId, entity.NextAction };
             entity.FullName = req.FullName.Trim(); entity.NormalizedName = TextNormalizer.Normalize(req.FullName); entity.BirthDate = req.BirthDate; entity.Nationality = req.Nationality;
             entity.PassportNumber = Blank(req.PassportNumber); entity.NormalizedPassportNumber = Blank(TextNormalizer.Normalize(req.PassportNumber)); entity.PassportExpiry = req.PassportExpiry;
-            entity.PassportReviewStatus = req.PassportReviewStatus; entity.DocumentationStatus = req.DocumentationStatus; entity.DocumentationExceptionReason = req.DocumentationExceptionReason;
-            if (req.DocumentationStatus == VerificationStatus.Confirmed) { entity.DocumentationVerifiedAt = DateTimeOffset.UtcNow; entity.DocumentationVerifiedById = UserId(user); }
+            entity.PassportReviewStatus = req.PassportReviewStatus;
             entity.Phone = req.Phone; entity.Email = req.Email; entity.PrimaryOperatorId = req.PrimaryOperatorId; entity.RoomReservationId = req.RoomReservationId;
             entity.EstimatedHotelArrival = req.EstimatedHotelArrival; entity.DietaryRestrictions = req.DietaryRestrictions; entity.Notes = req.Notes;
             entity.NextAction = req.NextAction; entity.NextActionDueDate = req.NextActionDueDate; entity.UpdatedById = UserId(user);
             try { await db.SaveChangesAsync(ct); } catch (DbUpdateConcurrencyException) { return Conflict(); }
-            await Audit(db, user, "Passenger", id, id, "Update", before, new { entity.FullName, passport = PassengerQueryService.MaskPassport(entity.PassportNumber), entity.DocumentationStatus, entity.RoomReservationId, entity.NextAction }, ct);
+            await Audit(db, user, "Passenger", id, id, "Update", before, new { entity.FullName, passport = PassengerQueryService.MaskPassport(entity.PassportNumber), entity.RoomReservationId, entity.NextAction }, ct);
             return Results.NoContent();
         }).RequireAuthorization("CanEdit");
         group.MapPost("/bulk-assign", async (BulkAssignRequest req, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
@@ -317,14 +326,55 @@ public static class ApiEndpoints
             var entities = await db.FlightBookings.AsNoTracking().Include(x => x.Segments)
                 .Include(x => x.PassengerFlights).ThenInclude(x => x.Passenger).ToListAsync(ct);
             return Results.Ok(entities.OrderBy(x => x.Pnr).Select(x => new { x.Id, x.Status, x.Airline, x.IssuingAgency, x.Pnr, x.GeneralReference, x.SourceReference, x.Notes,
+                x.BaggageStatus, x.CheckedBagIncluded, x.CheckedBagCount, x.CheckedBagWeightKg,
+                x.BaggageAppliesOutbound, x.BaggageAppliesReturn, x.BaggageSourceReference, x.BaggageNotes,
                 Segments = x.Segments.OrderBy(s => s.Sequence).Select(s => new { s.Id, s.Type, s.FlightNumber, s.OriginAirport,
                     s.DestinationAirport, s.DepartureAt, s.ArrivalAt, s.OriginTimeZone, s.DestinationTimeZone, s.Sequence }).ToList(),
-                Passengers = x.PassengerFlights.Select(p => new { p.PassengerId, p.Passenger.FullName, p.ElectronicTicketNumber, p.TicketStatus, p.Notes, p.Version, p.UpdatedAt, p.UpdatedById }).ToList(), x.Version }));
+                Passengers = x.PassengerFlights.Select(p => new { p.PassengerId, p.Passenger.FullName, p.ElectronicTicketNumber, p.TicketStatus,
+                    p.BookingLookupLastName, p.AirlineOrderId, p.TicketAccessStatus,
+                    TicketAccessManagePath = TicketAccessLinkService.IsSafeOfficialUrlForAirline(x.Airline, p.TicketAccessUrl)
+                        ? $"/api/ticket-access/{p.FlightBookingId}/{p.PassengerId}/open" : null,
+                    p.Notes, p.Version, p.UpdatedAt, p.UpdatedById }).ToList(), x.Version }));
         });
         group.MapPost("/", async (FlightBookingRequest req, IValidator<FlightBookingRequest> validator, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
             await SaveFlight(null, req, validator, db, user, ct)).RequireAuthorization("CanEdit");
         group.MapPut("/{id:guid}", async (Guid id, FlightBookingRequest req, IValidator<FlightBookingRequest> validator, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
             await SaveFlight(id, req, validator, db, user, ct)).RequireAuthorization("CanEdit");
+        group.MapPut("/{id:guid}/baggage", async (Guid id, FlightBaggageRequest req, IValidator<FlightBaggageRequest> validator,
+            AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            var validation = await validator.ValidateAsync(req, ct);
+            if (!validation.IsValid) return Validation(validation);
+            var booking = await db.FlightBookings.Include(x => x.PassengerFlights).SingleOrDefaultAsync(x => x.Id == id, ct);
+            if (booking is null) return Results.NotFound();
+            if (booking.Version != req.Version) return Conflict();
+            var before = new { booking.BaggageStatus, booking.CheckedBagIncluded, booking.CheckedBagCount,
+                booking.CheckedBagWeightKg, booking.BaggageAppliesOutbound, booking.BaggageAppliesReturn };
+            booking.BaggageStatus = req.Status;
+            booking.CheckedBagIncluded = req.Status == VerificationStatus.Confirmed;
+            booking.CheckedBagCount = req.Status == VerificationStatus.Confirmed ? req.CheckedBagCount : 0;
+            booking.CheckedBagWeightKg = req.Status == VerificationStatus.Confirmed ? req.CheckedBagWeightKg : 0;
+            booking.BaggageAppliesOutbound = req.Status == VerificationStatus.Confirmed && req.AppliesOutbound;
+            booking.BaggageAppliesReturn = req.Status == VerificationStatus.Confirmed && req.AppliesReturn;
+            booking.BaggageSourceReference = Blank(req.SourceReference);
+            booking.BaggageNotes = Blank(req.Notes);
+            if (req.Status is VerificationStatus.Confirmed or VerificationStatus.NotIncluded)
+            {
+                booking.BaggageVerifiedAt = DateTimeOffset.UtcNow;
+                booking.BaggageVerifiedById = UserId(user);
+            }
+            else
+            {
+                booking.BaggageVerifiedAt = null;
+                booking.BaggageVerifiedById = null;
+            }
+            try { await db.SaveChangesAsync(ct); } catch (DbUpdateConcurrencyException) { return Conflict(); }
+            await Audit(db, user, "FlightBooking", null, id, "BaggageUpdate", before,
+                new { booking.BaggageStatus, booking.CheckedBagIncluded, booking.CheckedBagCount,
+                    booking.CheckedBagWeightKg, booking.BaggageAppliesOutbound, booking.BaggageAppliesReturn,
+                    affectedPassengers = booking.PassengerFlights.Count }, ct);
+            return Results.Ok(new { booking.Version, affectedPassengers = booking.PassengerFlights.Count });
+        }).RequireAuthorization("CanEdit");
         group.MapPut("/{flightId:guid}/passengers/{passengerId:guid}/ticket", async (Guid flightId, Guid passengerId, PassengerTicketRequest req, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
         {
             var link = await db.PassengerFlights.Include(x => x.FlightBooking).ThenInclude(x => x.Segments)
@@ -445,120 +495,14 @@ public static class ApiEndpoints
                 EvidenceLabel = proofs.Any(p => p.BaggageEntitlementId == x.Id) ? "Comprobante directo"
                     : proofs.Any(p => p.FlightBookingId == x.FlightBookingId) ? "Comprobante compartido por PNR" : "Sin evidencia" }));
         });
-        group.MapPost("/", async (BaggageUpdateRequest req, IValidator<BaggageUpdateRequest> validator, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
-            await SaveBaggage(null, req, validator, db, user, ct)).RequireAuthorization("CanEdit");
-        group.MapPut("/{id:guid}", async (Guid id, BaggageUpdateRequest req, IValidator<BaggageUpdateRequest> validator,
-            AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
-            await SaveBaggage(id, req, validator, db, user, ct)).RequireAuthorization("CanEdit");
-        group.MapPost("/confirm-group", async (GroupBaggageRequest req, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
+        static IResult Gone() => Results.Json(new
         {
-            var booking = await db.FlightBookings.Include(x => x.Segments).Include(x => x.PassengerFlights)
-                .SingleOrDefaultAsync(x => x.Id == req.FlightBookingId, ct);
-            if (booking is null) return Results.NotFound();
-            var associated = booking.PassengerFlights.ToDictionary(x => x.PassengerId);
-            var ids = req.PassengerIds?.Distinct().ToList() ?? associated.Keys.ToList();
-            var existingByPassenger = await db.BaggageEntitlements
-                .Where(x => x.FlightBookingId == req.FlightBookingId && ids.Contains(x.PassengerId))
-                .ToDictionaryAsync(x => x.PassengerId, ct);
-            var skipped = new List<object>();
-            var updated = 0;
-            foreach (var passengerId in ids)
-            {
-                if (!associated.TryGetValue(passengerId, out var link))
-                {
-                    skipped.Add(new { passengerId, reason = "Pasajero no asociado al PNR" });
-                    continue;
-                }
-                string[] ticketMissing = [];
-                if (link.TicketStatus != VerificationStatus.Confirmed || !BusinessRules.FlightCanBeConfirmed(booking, link, out ticketMissing))
-                {
-                    skipped.Add(new { passengerId, reason = ticketMissing.FirstOrDefault() is { } reason ? $"Ticket todavía no confirmado: {reason}" : "Ticket todavía no confirmado" });
-                    continue;
-                }
-                if (!existingByPassenger.TryGetValue(passengerId, out var entity))
-                {
-                    entity = new BaggageEntitlement { PassengerId = passengerId, FlightBookingId = req.FlightBookingId };
-                    db.BaggageEntitlements.Add(entity);
-                    existingByPassenger[passengerId] = entity;
-                }
-                entity.Status = VerificationStatus.Confirmed; entity.CheckedBagCount = 1; entity.WeightPerBagKg = 23; entity.AppliesOutbound = true; entity.AppliesReturn = true;
-                entity.SourceReference = Blank(req.SourceReference); entity.Notes = Blank(req.Notes); entity.VerifiedAt = DateTimeOffset.UtcNow; entity.VerifiedById = UserId(user);
-                updated++;
-            }
-            try { await db.SaveChangesAsync(ct); }
-            catch (DbUpdateConcurrencyException) { return BaggageConflict(); }
-            catch (DbUpdateException) { return BaggageConflict(); }
-            await Audit(db, user, "BaggageEntitlement", null, req.FlightBookingId, "GroupConfirm", null, new { updated, skipped = skipped.Count }, ct);
-            return Results.Ok(new { updated, skipped });
-        }).RequireAuthorization("CanEdit");
+            message = "El equipaje ahora se gestiona desde la reserva aérea."
+        }, statusCode: StatusCodes.Status410Gone);
+        group.MapPost("/", Gone).RequireAuthorization("CanEdit");
+        group.MapPut("/{id:guid}", (Guid id) => Gone()).RequireAuthorization("CanEdit");
+        group.MapPost("/confirm-group", Gone).RequireAuthorization("CanEdit");
     }
-
-    private static async Task<IResult> SaveBaggage(
-        Guid? id,
-        BaggageUpdateRequest req,
-        IValidator<BaggageUpdateRequest> validator,
-        AppDbContext db,
-        ClaimsPrincipal user,
-        CancellationToken ct)
-    {
-        var validation = await validator.ValidateAsync(req, ct);
-        if (!validation.IsValid) return Validation(validation);
-        if (!req.FlightBookingId.HasValue)
-            return Results.BadRequest(new { message = "Debe asociarse una reserva aérea." });
-
-        BaggageEntitlement entity;
-        object? before = null;
-        if (id.HasValue)
-        {
-            entity = await db.BaggageEntitlements.SingleOrDefaultAsync(x => x.Id == id.Value, ct)
-                ?? null!;
-            if (entity is null) return Results.NotFound();
-            if (entity.PassengerId != req.PassengerId || entity.FlightBookingId != req.FlightBookingId)
-                return Results.BadRequest(new { message = "No se puede cambiar el pasajero ni la reserva de una franquicia existente." });
-            if (entity.Version != req.Version) return BaggageConflict();
-            before = new { entity.Status, entity.CheckedBagCount, entity.WeightPerBagKg, entity.Version };
-        }
-        else
-        {
-            if (req.Version != 0) return Results.BadRequest(new { message = "Una franquicia nueva debe enviarse con versión 0." });
-            if (await db.BaggageEntitlements.AnyAsync(x => x.PassengerId == req.PassengerId && x.FlightBookingId == req.FlightBookingId, ct))
-                return Results.Conflict(new { message = "Ya existe una franquicia para este pasajero y reserva." });
-            entity = new BaggageEntitlement { PassengerId = req.PassengerId, FlightBookingId = req.FlightBookingId };
-            db.BaggageEntitlements.Add(entity);
-        }
-
-        entity.Status = req.Status;
-        entity.CheckedBagCount = req.CheckedBagCount;
-        entity.WeightPerBagKg = req.WeightPerBagKg;
-        entity.AppliesOutbound = req.AppliesOutbound;
-        entity.AppliesReturn = req.AppliesReturn;
-        entity.ExceptionReason = Blank(req.ExceptionReason);
-        entity.SourceReference = Blank(req.SourceReference);
-        entity.Notes = Blank(req.Notes);
-        if (req.Status == VerificationStatus.Confirmed)
-        {
-            var link = await db.PassengerFlights.Include(x => x.FlightBooking).ThenInclude(x => x.Segments)
-                .SingleOrDefaultAsync(x => x.PassengerId == req.PassengerId && x.FlightBookingId == req.FlightBookingId, ct);
-            var hasEffectiveTicket = link?.TicketStatus == VerificationStatus.Confirmed
-                && BusinessRules.FlightCanBeConfirmed(link.FlightBooking, link, out _);
-            if (!BusinessRules.BaggageCanBeConfirmed(entity, hasEffectiveTicket, out var missing))
-                return Results.BadRequest(new { message = "No se puede confirmar la maleta.", missing });
-            entity.VerifiedAt = DateTimeOffset.UtcNow;
-            entity.VerifiedById = UserId(user);
-        }
-
-        try { await db.SaveChangesAsync(ct); }
-        catch (DbUpdateConcurrencyException) { return BaggageConflict(); }
-        catch (DbUpdateException) { return Results.Conflict(new { message = "Ya existe una franquicia para este pasajero y reserva." }); }
-        await Audit(db, user, "BaggageEntitlement", req.PassengerId, entity.Id, id.HasValue ? "Update" : "Create", before,
-            new { entity.Status, entity.CheckedBagCount, entity.WeightPerBagKg, entity.Version }, ct);
-        return id.HasValue ? Results.NoContent() : Results.Created($"/api/baggage/{entity.Id}", new { entity.Id, entity.Version });
-    }
-
-    private static IResult BaggageConflict() => Results.Conflict(new
-    {
-        message = "El registro de equipaje cambió; recargá la vista antes de guardar."
-    });
 
     private static void MapTransfer(RouteGroupBuilder api)
     {
@@ -895,6 +839,90 @@ public static class ApiEndpoints
             await Audit(db, principal, "User", null, id, "PasswordReset", null, new { reset = true }, ct);
             return Results.NoContent();
         }).RequireRateLimiting("auth");
+    }
+
+    private static void MapTicketAccess(RouteGroupBuilder api)
+    {
+        var group = api.MapGroup("/ticket-access");
+        group.MapPost("/preview-generation", async (TicketAccessLinkService service, CancellationToken ct) =>
+            Results.Ok(await service.PreviewAsync(ct))).RequireAuthorization("AdminOnly");
+        group.MapPost("/commit-generation", async (TicketAccessGenerationRequest req, TicketAccessLinkService service,
+            ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            if (!req.Confirm) return Results.BadRequest(new { message = "La generación requiere confirm=true." });
+            return Results.Ok(await service.CommitAsync(UserId(user), user.Identity?.Name, ct));
+        }).RequireAuthorization("AdminOnly");
+        group.MapPut("/{flightId:guid}/{passengerId:guid}/metadata", async (Guid flightId, Guid passengerId,
+            TicketAccessMetadataRequest req, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            var link = await db.PassengerFlights.Include(x => x.FlightBooking)
+                .SingleOrDefaultAsync(x => x.FlightBookingId == flightId && x.PassengerId == passengerId, ct);
+            if (link is null) return Results.NotFound();
+            if (link.Version != req.Version) return Conflict();
+            if (req.VerifiedOfficialSource && string.IsNullOrWhiteSpace(req.OfficialTicketAccessUrl))
+                return Results.BadRequest(new { message = "La verificación documental requiere un enlace oficial existente." });
+            if (!string.IsNullOrWhiteSpace(req.OfficialTicketAccessUrl)
+                && !TicketAccessLinkService.IsSafeOfficialUrlForAirline(link.FlightBooking.Airline, req.OfficialTicketAccessUrl))
+                return Results.BadRequest(new { message = "El enlace no pertenece a un proveedor oficial admitido." });
+
+            var before = new { link.TicketAccessStatus, hasLastName = !string.IsNullOrWhiteSpace(link.BookingLookupLastName),
+                hasOrderId = !string.IsNullOrWhiteSpace(link.AirlineOrderId), hasUrl = !string.IsNullOrWhiteSpace(link.TicketAccessUrl) };
+            link.BookingLookupLastName = Blank(req.BookingLookupLastName);
+            link.AirlineOrderId = Blank(req.AirlineOrderId);
+            var url = Blank(req.OfficialTicketAccessUrl) ?? TicketAccessLinkService.BuildUrl(link.FlightBooking, link);
+            if (url is null)
+            {
+                link.TicketAccessUrl = null;
+                link.TicketAccessStatus = TicketAccessStatus.Missing;
+                link.TicketAccessGeneratedAt = null;
+                link.TicketAccessVerifiedAt = null;
+            }
+            else
+            {
+                link.TicketAccessUrl = url;
+                link.TicketAccessGeneratedAt = DateTimeOffset.UtcNow;
+                link.TicketAccessStatus = req.VerifiedOfficialSource ? TicketAccessStatus.Verified : TicketAccessStatus.Generated;
+                link.TicketAccessVerifiedAt = req.VerifiedOfficialSource ? DateTimeOffset.UtcNow : null;
+            }
+            link.UpdatedById = UserId(user);
+            try { await db.SaveChangesAsync(ct); } catch (DbUpdateConcurrencyException) { return Conflict(); }
+            await Audit(db, user, "PassengerFlight", passengerId, $"{passengerId}:{flightId}", "TicketAccessMetadata", before,
+                new { link.TicketAccessStatus, hasLastName = !string.IsNullOrWhiteSpace(link.BookingLookupLastName),
+                    hasOrderId = !string.IsNullOrWhiteSpace(link.AirlineOrderId), hasUrl = !string.IsNullOrWhiteSpace(link.TicketAccessUrl) }, ct);
+            return Results.Ok(new { link.Version, link.TicketAccessStatus });
+        }).RequireAuthorization("CanEdit");
+        group.MapPost("/{flightId:guid}/{passengerId:guid}/verification", async (Guid flightId, Guid passengerId,
+            TicketAccessVerificationRequest req, AppDbContext db, ClaimsPrincipal user, CancellationToken ct) =>
+        {
+            var link = await db.PassengerFlights.Include(x => x.FlightBooking)
+                .SingleOrDefaultAsync(x => x.FlightBookingId == flightId && x.PassengerId == passengerId, ct);
+            if (link is null) return Results.NotFound();
+            if (link.Version != req.Version) return Conflict();
+            if (req.Verified && !TicketAccessLinkService.IsSafeOfficialUrlForAirline(link.FlightBooking.Airline, link.TicketAccessUrl))
+                return Results.BadRequest(new { message = "No existe un enlace oficial válido para verificar." });
+            var before = link.TicketAccessStatus;
+            link.TicketAccessStatus = req.Verified ? TicketAccessStatus.Verified : TicketAccessStatus.Invalid;
+            link.TicketAccessVerifiedAt = req.Verified ? DateTimeOffset.UtcNow : null;
+            link.UpdatedById = UserId(user);
+            try { await db.SaveChangesAsync(ct); } catch (DbUpdateConcurrencyException) { return Conflict(); }
+            await Audit(db, user, "PassengerFlight", passengerId, $"{passengerId}:{flightId}", "TicketAccessVerification",
+                new { status = before }, new { status = link.TicketAccessStatus, verified = req.Verified }, ct);
+            return Results.Ok(new { link.Version, link.TicketAccessStatus });
+        }).RequireAuthorization("AdminOnly");
+        group.MapGet("/{flightId:guid}/{passengerId:guid}/open", async (Guid flightId, Guid passengerId,
+            AppDbContext db, HttpContext context, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            var value = await db.PassengerFlights.AsNoTracking()
+                .Where(x => x.FlightBookingId == flightId && x.PassengerId == passengerId)
+                .Select(x => new { x.TicketAccessStatus, x.TicketAccessUrl, x.FlightBooking.Airline }).SingleOrDefaultAsync(ct);
+            if (value is null) return Results.NotFound();
+            if (value.TicketAccessStatus == TicketAccessStatus.Invalid) return Results.StatusCode(StatusCodes.Status410Gone);
+            return TicketAccessLinkService.IsSafeOfficialUrlForAirline(value.Airline, value.TicketAccessUrl)
+                ? Results.Redirect(value.TicketAccessUrl!, permanent: false, preserveMethod: false)
+                : Results.NotFound();
+        }).RequireAuthorization("CanEdit");
     }
 
     private static void MapReference(RouteGroupBuilder api)

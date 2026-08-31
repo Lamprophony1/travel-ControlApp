@@ -21,6 +21,7 @@ public sealed class PublicApiTests
         "sourceReference", "operatorContact", "attachments", "followUps", "audit", "auditLog", "updatedBy", "userName",
         "normalizedPassportNumber", "securePath", "storedName", "originalName", "sha256", "attachmentId", "attachmentLinkId",
         "linkId", "evidenceType", "sourceId", "managePath", "affectedPassengerCount", "ticketVersion", "updatedById"
+        , "orderId", "airlineOrderId", "bookingLookupLastName", "ticketAccessUrl"
     ];
 
     [Fact]
@@ -66,11 +67,49 @@ public sealed class PublicApiTests
         var publicFlight = Assert.Single(detailJson.GetProperty("flights").EnumerateArray());
         Assert.Equal("Copa Airlines", publicFlight.GetProperty("airline").GetString());
         Assert.Equal("Confirmed", publicFlight.GetProperty("ticketStatus").GetString());
+        Assert.True(publicFlight.GetProperty("hasTicketAccess").GetBoolean());
+        Assert.StartsWith("/ticket/", publicFlight.GetProperty("ticketAccessPath").GetString());
+        Assert.DoesNotContain("PRIVATE-PNR-999", detailJson.GetRawText());
         Assert.Equal("Copa Airlines", dashboardJson.GetProperty("airlines").EnumerateArray()
             .Single(x => x.GetProperty("name").GetString() == "Copa Airlines").GetProperty("name").GetString());
         var roomKpi = dashboardJson.GetProperty("kpis").EnumerateArray().Single(x => x.GetProperty("key").GetString() == "roomsConfirmed");
         Assert.Equal(0, roomKpi.GetProperty("value").GetInt32());
         Assert.Single(dashboardJson.GetProperty("alerts").EnumerateArray(), x => x.GetString() == "Transfer grupal pendiente");
+    }
+
+    [Fact]
+    public async Task Opaque_ticket_redirect_enforces_status_headers_and_rate_limit()
+    {
+        await using var factory = new TravelControlWebFactory();
+        var ct = TestContext.Current.CancellationToken;
+        await SeedPassengerAsync(factory.Services, ct);
+        string token;
+        await using (var scope = factory.Services.CreateAsyncScope())
+            token = await scope.ServiceProvider.GetRequiredService<AppDbContext>().PassengerFlights
+                .Select(x => x.PublicTicketAccessToken).SingleAsync(ct);
+        using var client = factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+            { AllowAutoRedirect = false });
+
+        var valid = await client.GetAsync($"/ticket/{token}", ct);
+        Assert.Equal(HttpStatusCode.Redirect, valid.StatusCode);
+        Assert.True(valid.Headers.CacheControl?.NoStore);
+        Assert.Equal("no-referrer", valid.Headers.GetValues("Referrer-Policy").Single());
+        Assert.Equal("mytrips.copaair.com", valid.Headers.Location?.Host);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/ticket/{Guid.NewGuid():N}", ct)).StatusCode);
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var link = await db.PassengerFlights.SingleAsync(ct);
+            link.TicketAccessStatus = TicketAccessStatus.Invalid;
+            await db.SaveChangesAsync(ct);
+        }
+        Assert.Equal(HttpStatusCode.Gone, (await client.GetAsync($"/ticket/{token}", ct)).StatusCode);
+
+        HttpResponseMessage? limited = null;
+        for (var index = 0; index < 121; index++)
+            limited = await client.GetAsync($"/ticket/{Guid.NewGuid():N}", ct);
+        Assert.Equal(HttpStatusCode.TooManyRequests, limited!.StatusCode);
     }
 
     [Fact]
@@ -221,7 +260,10 @@ public sealed class PublicApiTests
         flight.PassengerFlights.Add(new PassengerFlight
         {
             Passenger = passenger, TicketStatus = VerificationStatus.Confirmed,
-            ElectronicTicketNumber = "PRIVATE-ELECTRONIC-TICKET-999"
+            ElectronicTicketNumber = "PRIVATE-ELECTRONIC-TICKET-999", BookingLookupLastName = "Fictional",
+            TicketAccessStatus = TicketAccessStatus.Verified,
+            TicketAccessUrl = "https://mytrips.copaair.com/trip-detail/PRIVATEPNR999/FICTIONAL",
+            TicketAccessVerifiedAt = DateTimeOffset.UtcNow
         });
         db.AddRange(passenger, flight);
         await db.SaveChangesAsync(ct);

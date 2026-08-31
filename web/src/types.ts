@@ -1,7 +1,8 @@
 export type VerificationStatus = 'Confirmed' | 'ToVerify' | 'InProgress' | 'NotIncluded' | 'NotApplicable'
+export type TicketAccessStatus = 'Missing' | 'Generated' | 'Verified' | 'Invalid'
 export type OverallStatus = 'Ready' | 'Pending' | 'Attention'
 export interface RequirementState { key: string; status: VerificationStatus; label: string; reason?: string }
-export interface PassengerFlightSummary { flightBookingId:string;airline?:string;pnr?:string;ticketStatus:VerificationStatus;hasDetailedItinerary:boolean }
+export interface PassengerFlightSummary { flightBookingId:string;airline?:string;pnr?:string;ticketStatus:VerificationStatus;ticketAccessStatus:TicketAccessStatus;hasDetailedItinerary:boolean }
 export interface Passenger {
   id: string; fullName: string; maskedPassport: string; passportStatus: string; operator?: string; roomCode?: string; hotel?: string; roomType?: string
   checkIn?: string; checkOut?: string; nights?: number; documentationStatus: VerificationStatus; overallStatus: OverallStatus; progressPercent: number
@@ -22,7 +23,7 @@ export interface PublicRequirement { key:string;label:string;status:Verification
 export interface PublicPassenger {
   id:string;name:string;operator?:string;roomCode?:string;hotel?:string;roomType?:string;checkIn?:string;checkOut?:string
   overallStatus:OverallStatus;progressPercent:number;requirements:PublicRequirement[];missing:string[];alerts:string[];transferConfirmed:boolean
-  flights:{airline:string;ticketStatus:VerificationStatus}[]
+  flights:{airline:string;ticketStatus:VerificationStatus;hasTicketAccess:boolean;ticketAccessPath?:string}[]
 }
 export interface PublicMissingCounts {
   tickets:number;baggage:number;documentation:number;passports:number

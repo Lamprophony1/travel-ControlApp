@@ -13,7 +13,7 @@ test('muestra aerolínea y estado sin exponer PNR ni número de ticket', async (
     id: 'fixture-passenger', name: 'Persona ficticia', operator: 'Operadora ficticia',
     overallStatus: 'Attention', progressPercent: 80, requirements: [], missing: [], alerts: [],
     transferConfirmed: false,
-    flights: [{ airline: 'Copa Airlines', ticketStatus: 'Confirmed' }],
+    flights: [{ airline: 'Copa Airlines', ticketStatus: 'Confirmed', hasTicketAccess: true, ticketAccessPath: '/ticket/opaque-fixture-token' }],
   }
   vi.mocked(api).mockResolvedValue(passenger)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -29,6 +29,10 @@ test('muestra aerolínea y estado sin exponer PNR ni número de ticket', async (
   expect(await screen.findByRole('heading', { name: 'Persona ficticia' })).toBeVisible()
   expect(screen.getByText('Copa Airlines')).toBeVisible()
   expect(screen.getByText('Confirmado')).toBeVisible()
+  const link=screen.getByRole('link',{name:'Abrir mi ticket'})
+  expect(link).toHaveAttribute('href','/ticket/opaque-fixture-token')
+  expect(link).toHaveAttribute('target','_blank')
+  expect(link.getAttribute('href')).not.toContain('PRIVATE-PNR-999')
   expect(screen.queryByText('PRIVATE-PNR-999')).not.toBeInTheDocument()
   expect(screen.queryByText('PRIVATE-ELECTRONIC-TICKET-999')).not.toBeInTheDocument()
 })

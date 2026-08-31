@@ -63,7 +63,7 @@ public sealed class MutationIntegrityTests
     }
 
     [Fact]
-    public async Task Confirmed_ticket_without_electronic_number_is_effective_for_baggage_and_group_reports_skips()
+    public async Task Baggage_is_written_once_on_the_pnr_and_legacy_writes_are_gone()
     {
         await using var factory = new TravelControlWebFactory();
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true, BaseAddress = new Uri("https://localhost") });
@@ -85,47 +85,48 @@ public sealed class MutationIntegrityTests
             Assert.Null(ticket.ElectronicTicketNumber);
         }
 
-        var withoutBooking = Baggage(fixture.EligiblePassengerId, null, 1, 23, true, true, null);
-        Assert.Equal(HttpStatusCode.BadRequest, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage", withoutBooking, csrf)).StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage",
-            Baggage(fixture.EligiblePassengerId, fixture.FlightId, 1, 22, true, true, null), csrf)).StatusCode);
-        var withoutReturn = await SendJsonAsync(client, HttpMethod.Post, "/api/baggage",
-            Baggage(fixture.EligiblePassengerId, fixture.FlightId, 1, 23, true, false, null), csrf);
-        Assert.True(withoutReturn.StatusCode == HttpStatusCode.BadRequest, await withoutReturn.Content.ReadAsStringAsync(ct));
-        Assert.Equal(HttpStatusCode.BadRequest, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage",
-            Baggage(fixture.PendingPassengerId, fixture.FlightId, 1, 23, true, true, null), csrf)).StatusCode);
+        Assert.Equal(HttpStatusCode.Gone, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage", new { }, csrf)).StatusCode);
+        Assert.Equal(HttpStatusCode.Gone, (await SendJsonAsync(client, HttpMethod.Put, $"/api/baggage/{Guid.NewGuid()}", new { }, csrf)).StatusCode);
+        Assert.Equal(HttpStatusCode.Gone, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage/confirm-group", new { }, csrf)).StatusCode);
 
-        var justified = await SendJsonAsync(client, HttpMethod.Post, "/api/baggage",
-            Baggage(fixture.EligiblePassengerId, fixture.FlightId, 1, 23, true, false, "Excepción ficticia documentada"), csrf);
-        Assert.Equal(HttpStatusCode.Created, justified.StatusCode);
-        var createdBaggage = JsonDocument.Parse(await justified.Content.ReadAsStringAsync(ct)).RootElement;
-        var baggageId = createdBaggage.GetProperty("id").GetGuid();
-        var baggageVersion = createdBaggage.GetProperty("version").GetInt64();
-        var concurrentUpdate = new
+        var version = await CurrentVersionAsync(factory.Services, fixture.FlightId, ct);
+        var confirmed = new { status = "Confirmed", checkedBagCount = 1, checkedBagWeightKg = 23,
+            appliesOutbound = true, appliesReturn = true, sourceReference = "Comprobante ficticio", notes = (string?)null, version };
+        var response = await SendJsonAsync(client, HttpMethod.Put, $"/api/flights/{fixture.FlightId}/baggage", confirmed, csrf);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct)).RootElement.GetProperty("affectedPassengers").GetInt32());
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await SendJsonAsync(client, HttpMethod.Put, $"/api/flights/{fixture.FlightId}/baggage", confirmed, csrf)).StatusCode);
+
+        await using (var scope = factory.Services.CreateAsyncScope())
         {
-            passengerId = fixture.EligiblePassengerId, flightBookingId = fixture.FlightId, status = "Confirmed",
-            checkedBagCount = 1, weightPerBagKg = 23, appliesOutbound = true, appliesReturn = false,
-            exceptionReason = "Excepción ficticia actualizada", sourceReference = "Comprobante ficticio", notes = "Cambio A",
-            version = baggageVersion
-        };
-        Assert.Equal(HttpStatusCode.NoContent, (await SendJsonAsync(client, HttpMethod.Put, $"/api/baggage/{baggageId}", concurrentUpdate, csrf)).StatusCode);
-        var stale = await SendJsonAsync(client, HttpMethod.Put, $"/api/baggage/{baggageId}", concurrentUpdate, csrf);
-        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
-        Assert.Contains("recargá la vista", await stale.Content.ReadAsStringAsync(ct));
-        Assert.Equal(HttpStatusCode.Conflict, (await SendJsonAsync(client, HttpMethod.Post, "/api/baggage",
-            Baggage(fixture.EligiblePassengerId, fixture.FlightId, 1, 23, true, true, null), csrf)).StatusCode);
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var booking = await db.FlightBookings.SingleAsync(x => x.Id == fixture.FlightId, ct);
+            Assert.Equal(VerificationStatus.Confirmed, booking.BaggageStatus);
+            Assert.Equal(1, booking.CheckedBagCount);
+            Assert.Equal(23, booking.CheckedBagWeightKg);
+            Assert.Empty(await db.BaggageEntitlements.ToListAsync(ct));
+            var people = await db.Passengers.Include(x => x.Trip)
+                .Include(x => x.PassengerFlights).ThenInclude(x => x.FlightBooking)
+                .Where(x => x.Id == fixture.EligiblePassengerId || x.Id == fixture.PendingPassengerId).ToListAsync(ct);
+            Assert.All(people, person => Assert.Equal(VerificationStatus.Confirmed,
+                TravelControl.Application.Services.BusinessRules.CalculatePassenger(person, DateOnly.FromDateTime(DateTime.UtcNow))
+                    .Requirements.Single(x => x.Key == "baggage").Status));
+        }
 
-        var group = await SendJsonAsync(client, HttpMethod.Post, "/api/baggage/confirm-group",
-            new { flightBookingId = fixture.FlightId, passengerIds = new[] { fixture.EligiblePassengerId, fixture.PendingPassengerId }, sourceReference = "Comprobante ficticio", notes = (string?)null }, csrf);
-        Assert.Equal(HttpStatusCode.OK, group.StatusCode);
-        var result = JsonDocument.Parse(await group.Content.ReadAsStringAsync(ct)).RootElement;
-        Assert.Equal(1, result.GetProperty("updated").GetInt32());
-        var skipped = Assert.Single(result.GetProperty("skipped").EnumerateArray());
-        Assert.Equal(fixture.PendingPassengerId, skipped.GetProperty("passengerId").GetGuid());
-        Assert.Contains("Ticket todavía no confirmado", skipped.GetProperty("reason").GetString());
-        await using var scope = factory.Services.CreateAsyncScope();
-        Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<AppDbContext>().BaggageEntitlements
-            .CountAsync(x => x.PassengerId == fixture.EligiblePassengerId && x.FlightBookingId == fixture.FlightId, ct));
+        var current = await CurrentVersionAsync(factory.Services, fixture.FlightId, ct);
+        var excluded = new { status = "NotIncluded", checkedBagCount = 0, checkedBagWeightKg = 0,
+            appliesOutbound = false, appliesReturn = false, sourceReference = (string?)null, notes = (string?)null, version = current };
+        Assert.Equal(HttpStatusCode.OK,
+            (await SendJsonAsync(client, HttpMethod.Put, $"/api/flights/{fixture.FlightId}/baggage", excluded, csrf)).StatusCode);
+        await AssertAllBaggageStatusesAsync(factory.Services, fixture.FlightId, VerificationStatus.NotIncluded, ct);
+
+        current = await CurrentVersionAsync(factory.Services, fixture.FlightId, ct);
+        var pendingBaggage = new { status = "ToVerify", checkedBagCount = 0, checkedBagWeightKg = 0,
+            appliesOutbound = false, appliesReturn = false, sourceReference = (string?)null, notes = (string?)null, version = current };
+        Assert.Equal(HttpStatusCode.OK,
+            (await SendJsonAsync(client, HttpMethod.Put, $"/api/flights/{fixture.FlightId}/baggage", pendingBaggage, csrf)).StatusCode);
+        await AssertAllBaggageStatusesAsync(factory.Services, fixture.FlightId, VerificationStatus.ToVerify, ct);
     }
 
     [Fact]
@@ -331,6 +332,19 @@ public sealed class MutationIntegrityTests
         return await scope.ServiceProvider.GetRequiredService<AppDbContext>().PassengerFlights
             .Where(x => x.FlightBookingId == flightId && x.PassengerId == passengerId)
             .Select(x => x.Version).SingleAsync(ct);
+    }
+
+    private static async Task AssertAllBaggageStatusesAsync(IServiceProvider services, Guid flightId,
+        VerificationStatus expected, CancellationToken ct)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var people = await scope.ServiceProvider.GetRequiredService<AppDbContext>().Passengers
+            .Include(x => x.Trip).Include(x => x.PassengerFlights).ThenInclude(x => x.FlightBooking)
+            .Where(x => x.PassengerFlights.Any(link => link.FlightBookingId == flightId)).ToListAsync(ct);
+        Assert.NotEmpty(people);
+        Assert.All(people, person => Assert.Equal(expected,
+            TravelControl.Application.Services.BusinessRules.CalculatePassenger(person, DateOnly.FromDateTime(DateTime.UtcNow))
+                .Requirements.Single(x => x.Key == "baggage").Status));
     }
 
     private static object Baggage(Guid passengerId, Guid? flightId, int count, decimal weight, bool outbound, bool inbound, string? exception) => new

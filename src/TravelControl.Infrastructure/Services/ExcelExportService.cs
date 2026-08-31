@@ -24,6 +24,7 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
         BuildDashboard(workbook.AddWorksheet("Dashboard"), snapshot);
         BuildPassengers(workbook.AddWorksheet("Control pasajeros"), passengers, evidence);
         BuildRooms(workbook.AddWorksheet("Habitaciones"), snapshot.Rooms, roomEvidence);
+        BuildFlights(workbook.AddWorksheet("Vuelos"), passengers);
         BuildSources(workbook.AddWorksheet("Fuentes y uso"));
         using var stream = new MemoryStream(); workbook.SaveAs(stream); return stream.ToArray();
     }
@@ -41,7 +42,7 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
     public async Task<byte[]> ExportPassengersCsvAsync(CancellationToken ct)
     {
         var people = await passengerQueries.BaseQuery().OrderBy(x => x.FullName).ToListAsync(ct);
-        var lines = new List<string> { "Nombre,Pasaporte enmascarado,Operadora,Código interno de grupo,Aerolínea,Nro. de reserva,Estado ticket,Número ticket electrónico,Estado general,Avance,Próxima acción,Fecha próxima acción" };
+        var lines = new List<string> { "Nombre,Pasaporte enmascarado,Operadora,Código interno de grupo,Aerolínea,Nro. de reserva,Estado ticket,Número ticket electrónico,Acceso ticket,Documentación,Maleta 23 kg,Estado general,Avance,Próxima acción,Fecha próxima acción" };
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var evidence = await evidenceResolver.GetForPassengersAsync(people.Select(x => x.Id), ct);
         foreach (var passenger in people)
@@ -51,7 +52,9 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
             lines.Add(string.Join(',', new[] { passenger.FullName, PassengerQueryService.MaskPassport(passenger.PassportNumber),
                 passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode,
                 JoinFlights(flights, x => x.FlightBooking.Airline), JoinFlights(flights, x => x.FlightBooking.Pnr),
-                JoinFlights(flights, x => VerificationLabel(x.TicketStatus)), JoinFlights(flights, x => x.ElectronicTicketNumber), OverallLabel(state.OverallStatus),
+                JoinFlights(flights, x => VerificationLabel(x.TicketStatus)), JoinFlights(flights, x => x.ElectronicTicketNumber),
+                JoinFlights(flights, x => x.TicketAccessStatus == TicketAccessStatus.Verified ? "Disponible" : "Pendiente"),
+                Status(state, "documentation"), Status(state, "baggage"), OverallLabel(state.OverallStatus),
                 state.ProgressPercent.ToString(), passenger.NextAction, passenger.NextActionDueDate?.ToString("dd/MM/yyyy") }.Select(Csv)));
         }
         return Encoding.UTF8.GetBytes(string.Join("\r\n", lines));
@@ -95,7 +98,7 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
     private static void BuildPassengers(IXLWorksheet sheet, IReadOnlyList<Passenger> passengers, IReadOnlyDictionary<Guid, PassengerEvidenceState> evidence)
     {
         var headers = new[] { "Pasajero", "Estado pasaporte", "Operadora", "Habitación / grupo", "Pasaporte enmascarado",
-            "Aerolínea", "Nro. de reserva", "Estado ticket", "Número ticket electrónico",
+            "Aerolínea", "Nro. de reserva", "Estado ticket", "Número ticket electrónico", "Acceso ticket",
             "Documentación", "Habitación", "Vuelo", "Maleta 23 kg", "Avance", "Próxima acción", "Fecha próxima acción", "Observaciones" };
         Row(sheet, 1, headers.Cast<object?>().ToArray()); Header(sheet.Range(1, 1, 1, headers.Length)); var today = DateOnly.FromDateTime(DateTime.UtcNow);
         for (var index = 0; index < passengers.Count; index++)
@@ -105,10 +108,12 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
             Row(sheet, row, p.FullName, Status(state, "passport"), p.PrimaryOperator?.Name, p.RoomReservation?.InternalCode,
                 PassengerQueryService.MaskPassport(p.PassportNumber), JoinFlights(flights, x => x.FlightBooking.Airline),
                 JoinFlights(flights, x => x.FlightBooking.Pnr), JoinFlights(flights, x => VerificationLabel(x.TicketStatus)),
-                JoinFlights(flights, x => x.ElectronicTicketNumber), Status(state, "documentation"), Status(state, "room"),
+                JoinFlights(flights, x => x.ElectronicTicketNumber),
+                JoinFlights(flights, x => x.TicketAccessStatus == TicketAccessStatus.Verified ? "Disponible" : "Pendiente"),
+                Status(state, "documentation"), Status(state, "room"),
                 Status(state, "flight"), Status(state, "baggage"), state.ProgressPercent, p.NextAction, p.NextActionDueDate, p.Notes);
-            sheet.Cell(row, 16).Style.DateFormat.Format = "dd/mm/yyyy";
-            sheet.Range(row, 6, row, 9).Style.Alignment.WrapText = true;
+            sheet.Cell(row, 17).Style.DateFormat.Format = "dd/mm/yyyy";
+            sheet.Range(row, 6, row, 10).Style.Alignment.WrapText = true;
         }
         if (passengers.Count > 0) sheet.Range(1, 1, passengers.Count + 1, headers.Length).CreateTable("PassengerControl");
         sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
@@ -129,12 +134,33 @@ public sealed class ExcelExportService(AppDbContext db, PassengerQueryService pa
         if (rooms.Count > 0) sheet.Range(1, 1, rooms.Count + 1, headers.Length).CreateTable("RoomControl"); sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
     }
 
+    private static void BuildFlights(IXLWorksheet sheet, IReadOnlyList<Passenger> passengers)
+    {
+        var flights = passengers.SelectMany(x => x.PassengerFlights).Select(x => x.FlightBooking)
+            .DistinctBy(x => x.Id).OrderBy(x => x.Pnr).ToArray();
+        var headers = new[] { "Nro. de reserva", "Aerolínea", "Pasajeros", "Estado ticket", "Accesos disponibles",
+            "Equipaje", "Cantidad", "Peso kg", "Ida", "Regreso" };
+        Row(sheet, 1, headers.Cast<object?>().ToArray()); Header(sheet.Range(1, 1, 1, headers.Length));
+        for (var index = 0; index < flights.Length; index++)
+        {
+            var flight = flights[index];
+            Row(sheet, index + 2, flight.Pnr, flight.Airline, flight.PassengerFlights.Count,
+                VerificationLabel(flight.Status),
+                $"{flight.PassengerFlights.Count(x => x.TicketAccessStatus == TicketAccessStatus.Verified)} / {flight.PassengerFlights.Count}",
+                VerificationLabel(flight.BaggageStatus), flight.CheckedBagCount, flight.CheckedBagWeightKg,
+                flight.BaggageAppliesOutbound ? "Sí" : "No", flight.BaggageAppliesReturn ? "Sí" : "No");
+        }
+        if (flights.Length > 0) sheet.Range(1, 1, flights.Length + 1, headers.Length).CreateTable("FlightControl");
+        sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(10, 34);
+    }
+
     private static void BuildSources(IXLWorksheet sheet)
     {
         Title(sheet, "Fuentes y uso", 3); Row(sheet, 3, "Hoja", "Uso", "Importable"); Header(sheet.Range("A3:C3"));
         Row(sheet, 4, "Control pasajeros", "Fuente autoritativa de pasajeros y estado operativo", "Sí");
         Row(sheet, 5, "Habitaciones", "Fuente autoritativa de reservas y ocupación", "Sí");
-        Row(sheet, 6, "Dashboard", "Resumen calculado; nunca se importa", "No"); Row(sheet, 7, "Fuentes y uso", "Documentación informativa", "No");
+        Row(sheet, 6, "Vuelos", "Resumen privado de ticket, acceso y equipaje por PNR", "No");
+        Row(sheet, 7, "Dashboard", "Resumen calculado; nunca se importa", "No"); Row(sheet, 8, "Fuentes y uso", "Documentación informativa", "No");
         sheet.Columns().AdjustToContents(12, 55);
     }
 

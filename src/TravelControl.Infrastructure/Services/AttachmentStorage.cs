@@ -37,6 +37,7 @@ public sealed class AttachmentStorage(AppDbContext db, IConfiguration config, IL
         CancellationToken ct)
     {
         ValidateTarget(passengerId, roomId, flightId, baggageId);
+        ValidateEvidenceTarget(documentType, flightId, baggageId);
         await ValidateTargetExistsAsync(passengerId, roomId, flightId, baggageId, ct);
         if (file.Length is <= 0 || file.Length > maxBytes)
             throw new InvalidOperationException($"El archivo debe pesar entre 1 byte y {maxBytes / 1024 / 1024} MB.");
@@ -100,6 +101,7 @@ public sealed class AttachmentStorage(AppDbContext db, IConfiguration config, IL
         CancellationToken ct)
     {
         ValidateTarget(passengerId, roomId, flightId, baggageId);
+        ValidateEvidenceTarget(evidenceType, flightId, baggageId);
         await ValidateTargetExistsAsync(passengerId, roomId, flightId, baggageId, ct);
         var attachment = await db.Attachments.SingleOrDefaultAsync(x => x.Id == attachmentId, ct)
             ?? throw new KeyNotFoundException();
@@ -277,6 +279,12 @@ public sealed class AttachmentStorage(AppDbContext db, IConfiguration config, IL
         Action = action,
         PreviousValue = JsonSerializer.Serialize(before)
     };
+
+    private static void ValidateEvidenceTarget(DocumentType evidenceType, Guid? flightId, Guid? baggageId)
+    {
+        if (evidenceType == DocumentType.BaggageProof && (!flightId.HasValue || baggageId.HasValue))
+            throw new InvalidOperationException("Los comprobantes nuevos de equipaje deben vincularse directamente al PNR.");
+    }
 
     private static void ValidateTarget(Guid? passengerId, Guid? roomId, Guid? flightId, Guid? baggageId)
     {

@@ -97,7 +97,7 @@ public sealed class EvidenceResolver(AppDbContext db)
                         $"Habitación {x.RoomCode ?? "sin código"}", false, false, x.RoomPassengers, "/gestion/habitaciones",
                         x.OriginalName, x.MimeType, x.Size, x.UploadedAt);
                 return new RelatedEvidence(x.AttachmentId, x.Id, x.EvidenceType, "BaggageEntitlement", x.BaggageEntitlementId!.Value,
-                    "Equipaje individual", false, false, 1, "/gestion/equipaje", x.OriginalName, x.MimeType, x.Size, x.UploadedAt);
+                    "Equipaje individual (legacy)", false, false, 1, "/gestion/vuelos?focus=baggage", x.OriginalName, x.MimeType, x.Size, x.UploadedAt);
             })
             .OrderByDescending(x => x.UploadedAt).ThenBy(x => x.OriginalName).ToArray();
     }

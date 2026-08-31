@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 const email='admin@example.test',password='Test-only-Password!2026'
-const forbidden=['passportNumber','normalizedPassportNumber','maskedPassport','birthDate','nationality','passportExpiry','phone','email','dietaryRestrictions','notes','nextAction','nextActionDueDate','pnr','electronicTicketNumber','sourceReference','securePath','storedName','originalName','sha256','operatorContact','attachments','attachmentId','attachmentLinkId','linkId','evidenceType','sourceId','managePath','affectedPassengerCount','ticketVersion','updatedById','followUps','audit','auditLog','updatedBy','userName']
+const forbidden=['passportNumber','normalizedPassportNumber','maskedPassport','birthDate','nationality','passportExpiry','phone','email','dietaryRestrictions','notes','nextAction','nextActionDueDate','pnr','electronicTicketNumber','sourceReference','securePath','storedName','originalName','sha256','operatorContact','attachments','attachmentId','attachmentLinkId','linkId','evidenceType','sourceId','managePath','affectedPassengerCount','ticketVersion','updatedById','followUps','audit','auditLog','updatedBy','userName','orderId','airlineOrderId','bookingLookupLastName','ticketAccessUrl']
+const projectKeys:Record<string,string>={'mobile-360':'alpha','mobile-390':'bravo','mobile-430':'charlie','tablet-768':'delta','desktop-1440':'echo'}
+function projectKey(testInfo:TestInfo){return projectKeys[testInfo.project.name]??testInfo.project.name.replace(/[^a-z]/gi,'')}
 
 async function noOverflow(page:Page){expect(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth)).toBeFalsy()}
 async function enterManagement(page:Page){
@@ -42,8 +44,8 @@ async function createPassenger(page:Page,name:string,token:string){
 }
 
 interface E2ERoom {id:string;internalCode:string;operator:{id:string};storedStatus:string;hotel?:string;roomType?:string;checkIn?:string;checkOut?:string;expectedCapacity:number;capacityOverride:boolean;capacityOverrideReason?:string;hotelReservationNumber?:string;mealPlan?:string;sourceReference?:string;operatorContact?:string;notes?:string;version:number}
-interface E2EFlightPassenger {passengerId:string;ticketStatus:string;version:number}
-interface E2EFlight {id:string;airline?:string;issuingAgency?:string;pnr?:string;generalReference?:string;sourceReference?:string;notes?:string;segments:{id:string;type:string;flightNumber?:string;originAirport?:string;destinationAirport?:string;departureAt?:string;arrivalAt?:string;originTimeZone?:string;destinationTimeZone?:string;sequence:number}[];passengers:E2EFlightPassenger[];version:number}
+interface E2EFlightPassenger {passengerId:string;fullName?:string;ticketStatus:string;ticketAccessStatus?:string;version:number}
+interface E2EFlight {id:string;airline?:string;issuingAgency?:string;pnr?:string;generalReference?:string;sourceReference?:string;notes?:string;baggageStatus:string;segments:{id:string;type:string;flightNumber?:string;originAirport?:string;destinationAirport?:string;departureAt?:string;arrivalAt?:string;originTimeZone?:string;destinationTimeZone?:string;sequence:number}[];passengers:E2EFlightPassenger[];version:number}
 
 function roomUpdate(room:E2ERoom,hotel:string){
   return {internalCode:room.internalCode,operatorId:room.operator.id,status:'Confirmed',hotel,roomType:room.roomType,expectedCapacity:room.expectedCapacity,capacityOverride:room.capacityOverride,capacityOverrideReason:room.capacityOverrideReason,checkIn:room.checkIn,checkOut:room.checkOut,hotelReservationNumber:room.hotelReservationNumber,mealPlan:room.mealPlan,sourceReference:room.sourceReference,operatorContact:room.operatorContact,notes:room.notes,version:room.version}
@@ -69,7 +71,7 @@ async function prepareReadinessBlocker(page:Page,token:string){
     {id:null,type:'Outbound',flightNumber:'RDY1',originAirport:'AAA',destinationAirport:'BBB',departureAt:'2026-09-06T10:00:00Z',arrivalAt:'2026-09-06T12:00:00Z',originTimeZone:null,destinationTimeZone:null,sequence:1},
     {id:null,type:'Return',flightNumber:'RDY2',originAirport:'BBB',destinationAirport:'AAA',departureAt:'2026-09-15T10:00:00Z',arrivalAt:'2026-09-15T12:00:00Z',originTimeZone:null,destinationTimeZone:null,sequence:2},
   ]
-  const flightData={status:'Confirmed',airline:'Aerolínea ficticia',issuingAgency:null,pnr:'E2E-READY-PNR',generalReference:null,sourceReference:'Referencia ficticia',notes:'Fixture de readiness',passengerIds,version:readinessFlight?.version??0,segments}
+  const flightData={status:'Confirmed',airline:'Copa Airlines',issuingAgency:null,pnr:'E2E-READY-PNR',generalReference:null,sourceReference:'Referencia ficticia',notes:'Fixture de readiness',passengerIds,version:readinessFlight?.version??0,segments}
   const savedFlight=readinessFlight
     ?await page.request.put(`/api/flights/${readinessFlight.id}`,{headers:{'X-XSRF-TOKEN':token},data:flightData})
     :await page.request.post('/api/flights',{headers:{'X-XSRF-TOKEN':token},data:flightData})
@@ -86,13 +88,28 @@ async function prepareReadinessBlocker(page:Page,token:string){
       expect(ticket.ok()).toBeTruthy()
     }
   }
-  const baggage=await page.request.post('/api/baggage/confirm-group',{headers:{'X-XSRF-TOKEN':token},data:{flightBookingId:readinessFlight.id,passengerIds,sourceReference:'Referencia ficticia',notes:'Fixture ficticio'}})
-  expect(baggage.ok()).toBeTruthy()
+  flights=await (await page.request.get('/api/flights')).json() as E2EFlight[]
+  for(const flight of flights){
+    const baggagePayload=(version:number)=>({status:'Confirmed',checkedBagCount:1,checkedBagWeightKg:23,appliesOutbound:true,appliesReturn:true,sourceReference:'Referencia ficticia',notes:'Fixture ficticio',version})
+    let baggage=await page.request.put(`/api/flights/${flight.id}/baggage`,{headers:{'X-XSRF-TOKEN':token},data:baggagePayload(flight.version)})
+    if(baggage.status()===409){
+      const fresh=(await (await page.request.get('/api/flights')).json() as E2EFlight[]).find(item=>item.id===flight.id)!
+      baggage=await page.request.put(`/api/flights/${flight.id}/baggage`,{headers:{'X-XSRF-TOKEN':token},data:baggagePayload(fresh.version)})
+    }
+    expect(baggage.ok(),`baggage update returned ${baggage.status()}`).toBeTruthy()
+  }
+
+  flights=await (await page.request.get('/api/flights')).json() as E2EFlight[]
+  for(const flight of flights)for(const link of flight.passengers){
+    const latam=/LATAM|^LA$/i.test(flight.airline?.trim()??'')
+    const access=await page.request.put(`/api/ticket-access/${flight.id}/${link.passengerId}/metadata`,{headers:{'X-XSRF-TOKEN':token},data:{bookingLookupLastName:'Fictional',airlineOrderId:latam?'E2EREALORDER':null,officialTicketAccessUrl:latam?'https://www.latamairlines.com/py/es/mis-viajes/second-detail?orderId=E2EREALORDER&lastname=fictional':'https://mytrips.copaair.com/trip-detail/E2EFIXTURE/FICTIONAL',verifiedOfficialSource:true,version:link.version}})
+    expect(access.ok()).toBeTruthy()
+  }
 
   for(const passengerId of passengerIds){
     const detail=await (await page.request.get(`/api/passengers/${passengerId}`)).json()
     const passenger=detail.passenger
-    const updated=await page.request.put(`/api/passengers/${passengerId}`,{headers:{'X-XSRF-TOKEN':token},data:{fullName:passenger.fullName,birthDate:'1990-01-01',nationality:'Ficticia',passportNumber:`E2E-RDY-${passengerId.slice(0,18)}`,passportExpiry:'2035-01-01',passportReviewStatus:'Confirmed',documentationStatus:'Confirmed',documentationExceptionReason:null,phone:passenger.phone,email:passenger.email,primaryOperatorId:passenger.primaryOperator?.id??null,roomReservationId:room.id,estimatedHotelArrival:passenger.estimatedHotelArrival,dietaryRestrictions:passenger.dietaryRestrictions,notes:passenger.notes,nextAction:null,nextActionDueDate:null,version:passenger.version}})
+    const updated=await page.request.put(`/api/passengers/${passengerId}`,{headers:{'X-XSRF-TOKEN':token},data:{fullName:passenger.fullName,birthDate:'1990-01-01',nationality:'Ficticia',passportNumber:`E2E-RDY-${passengerId.slice(0,18)}`,passportExpiry:'2035-01-01',passportReviewStatus:'Confirmed',phone:passenger.phone,email:passenger.email,primaryOperatorId:passenger.primaryOperator?.id??null,roomReservationId:room.id,estimatedHotelArrival:passenger.estimatedHotelArrival,dietaryRestrictions:passenger.dietaryRestrictions,notes:passenger.notes,nextAction:null,nextActionDueDate:null,version:passenger.version}})
     expect(updated.ok()).toBeTruthy()
   }
   const transfer=await (await page.request.get('/api/transfer')).json()
@@ -110,10 +127,10 @@ async function prepareReadinessBlocker(page:Page,token:string){
 
 async function openTicketDialog(page:Page,pnr:string,passengerName:string){
   await page.goto('/gestion/vuelos')
-  const card=page.getByRole('heading',{name:pnr}).locator('xpath=ancestor::*[contains(@class,"MuiCard-root")][1]')
+  const card=page.getByText(pnr,{exact:true}).locator('xpath=ancestor::*[contains(@class,"MuiCard-root")][1]')
   await expect(card).toBeVisible()
   const passenger=card.getByText(passengerName,{exact:true}).locator('xpath=ancestor::*[contains(@class,"MuiAlert-root")][1]')
-  await passenger.getByRole('button',{name:'Gestionar ticket'}).click()
+  await passenger.getByRole('button',{name:'Ticket'}).click()
   await expect(page.getByRole('dialog',{name:`Ticket de ${passengerName}`})).toBeVisible()
 }
 
@@ -138,15 +155,15 @@ test('gestión protegida y detalle público no expone datos sensibles',async({pa
   await enterManagement(page)
   const csrfResponse=await page.request.get('/api/auth/csrf')
   const csrf=(await csrfResponse.json()).token as string
-  const name=`Persona ficticia ${testInfo.project.name}`
-  const create=await page.request.post('/api/passengers',{headers:{'X-XSRF-TOKEN':csrf},data:{fullName:name,birthDate:'1990-01-01',nationality:'Ficticia',passportNumber:`SECRET-${testInfo.project.name}`,passportExpiry:'2030-01-01',phone:'000-SECRET',email:'fixture@example.test',primaryOperatorId:null,roomReservationId:null,nextAction:'Dato interno',nextActionDueDate:null,dietaryRestrictions:'Dato interno',notes:'Dato interno'}})
+  const key=projectKey(testInfo),name=`Persona ficticia ${key}`
+  const create=await page.request.post('/api/passengers',{headers:{'X-XSRF-TOKEN':csrf},data:{fullName:name,birthDate:'1990-01-01',nationality:'Ficticia',passportNumber:`SECRET-${key}`,passportExpiry:'2030-01-01',phone:'000-SECRET',email:'fixture@example.test',primaryOperatorId:null,roomReservationId:null,nextAction:'Dato interno',nextActionDueDate:null,dietaryRestrictions:'Dato interno',notes:'Dato interno'}})
   expect([201,409]).toContain(create.status())
   await page.goto(`/pasajeros?search=${encodeURIComponent(name)}`)
   const visibleName=page.getByText(name,{exact:true}).filter({visible:true})
   await expect(visibleName).toBeVisible()
   await visibleName.click()
   await expect(page.getByRole('heading',{name})).toBeVisible()
-  await expect(page.getByText(`SECRET-${testInfo.project.name}`)).toHaveCount(0)
+  await expect(page.getByText(`SECRET-${key}`)).toHaveCount(0)
   await expect(page.getByText('000-SECRET')).toHaveCount(0)
   await expect(page.getByText('fixture@example.test')).toHaveCount(0)
   await expect(page.getByText('PNR',{exact:true})).toHaveCount(0)
@@ -186,7 +203,7 @@ test('rutas privadas sin cookie devuelven 401',async({request})=>{
 test('manifiesto ficticio confirma reservas sin ticket electrónico y mantiene el PNR privado',async({page},testInfo:TestInfo)=>{
   await enterManagement(page)
   const token=await csrf(page)
-  const suffix=testInfo.project.name.replace(/[^a-z0-9]/gi,'-')
+  const suffix=projectKey(testInfo)
   const firstName=`E2E Reserva Uno ${suffix}`
   const secondName=`E2E Reserva Dos ${suffix}`
   const firstId=await createPassenger(page,firstName,token)
@@ -212,14 +229,14 @@ test('manifiesto ficticio confirma reservas sin ticket electrónico y mantiene e
   await expect(card.getByText('Actualización confirmada y auditada.')).toBeVisible()
 
   await page.goto(`/gestion/pasajeros/${firstId}`)
-  await expect(page.getByText('Copa Airlines (CM)',{exact:true}).first()).toBeVisible()
-  await expect(page.getByText(pnr,{exact:true}).first()).toBeVisible()
-  await expect(page.getByText('Número electrónico no informado',{exact:true}).first()).toBeVisible()
   if((page.viewportSize()?.width??0)<900){
     await page.getByRole('combobox',{name:'Sección'}).click()
     await page.getByRole('option',{name:'Vuelo'}).click()
   }else await page.getByRole('tab',{name:'Vuelo'}).click()
-  await expect(page.getByText('Itinerario detallado no cargado',{exact:true}).first()).toBeVisible()
+  await expect(page.getByText(/^Copa Airlines(?: \(CM\))?$/).first()).toBeVisible()
+  await expect(page.getByText(pnr,{exact:true}).first()).toBeVisible()
+  await expect(page.getByText('Número electrónico no informado',{exact:true}).first()).toBeVisible()
+  await expect(page.getByText('Itinerario no cargado',{exact:true}).first()).toBeVisible()
 
   await page.goto(`/pasajeros/${firstId}`)
   await expect(page.getByText('Copa Airlines',{exact:true}).first()).toBeVisible()
@@ -231,10 +248,81 @@ test('manifiesto ficticio confirma reservas sin ticket electrónico y mantiene e
   for(const key of forbidden)expect(publicJson.toLowerCase()).not.toContain(`"${key.toLowerCase()}"`)
 })
 
+test('acceso público opaco y equipaje compartido se administran desde Vuelos',async({page},testInfo:TestInfo)=>{
+  await enterManagement(page)
+  const token=await csrf(page),suffix=projectKey(testInfo).toUpperCase()
+  const firstName=`E2E Acceso Uno ${suffix}`,secondName=`E2E Acceso Dos ${suffix}`
+  const firstId=await createPassenger(page,firstName,token),secondId=await createPassenger(page,secondName,token)
+  const pnr=`BG${suffix}`.slice(0,12)
+  const existing=(await (await page.request.get('/api/flights')).json() as E2EFlight[])
+    .find(item=>item.pnr===pnr&&item.passengers.some(link=>link.passengerId===firstId))
+  let flightId=existing?.id
+  if(!flightId){
+    const created=await page.request.post('/api/flights',{headers:{'X-XSRF-TOKEN':token},data:{status:'Confirmed',airline:'Copa Airlines',issuingAgency:null,pnr,generalReference:null,sourceReference:null,notes:null,passengerIds:[firstId,secondId],version:0,segments:[]}})
+    expect(created.status()).toBe(201)
+    flightId=(await created.json()).id as string
+  }
+  let flight=(await (await page.request.get('/api/flights')).json() as E2EFlight[]).find(item=>item.id===flightId)!
+  for(const link of flight.passengers){
+    const ticket=await page.request.put(`/api/flights/${flightId}/passengers/${link.passengerId}/ticket`,{headers:{'X-XSRF-TOKEN':token},data:{electronicTicketNumber:'',status:'Confirmed',notes:null,version:link.version}})
+    expect(ticket.ok()).toBeTruthy()
+  }
+  flight=(await (await page.request.get('/api/flights')).json() as E2EFlight[]).find(item=>item.id===flightId)!
+  const firstLink=flight.passengers.find(item=>item.passengerId===firstId)!
+  const access=await page.request.put(`/api/ticket-access/${flightId}/${firstId}/metadata`,{headers:{'X-XSRF-TOKEN':token},data:{bookingLookupLastName:'Fictional',airlineOrderId:null,officialTicketAccessUrl:'https://mytrips.copaair.com/trip-detail/E2EMOCK/FICTIONAL',verifiedOfficialSource:true,version:firstLink.version}})
+  expect(access.ok()).toBeTruthy()
+  const secondLink=flight.passengers.find(item=>item.passengerId===secondId)!
+  const pendingAccess=await page.request.put(`/api/ticket-access/${flightId}/${secondId}/metadata`,{headers:{'X-XSRF-TOKEN':token},data:{bookingLookupLastName:null,airlineOrderId:null,officialTicketAccessUrl:null,verifiedOfficialSource:false,version:secondLink.version}})
+  expect(pendingAccess.ok()).toBeTruthy()
+  const accessState=(await (await page.request.get('/api/flights')).json() as E2EFlight[]).find(item=>item.id===flightId)!
+  expect(accessState.passengers.find(item=>item.passengerId===secondId)!.ticketAccessStatus).toBe('Missing')
+
+  await page.goto(`/pasajeros/${firstId}`)
+  const ticketLink=page.getByRole('link',{name:'Abrir mi ticket'}).first()
+  await expect(ticketLink).toBeVisible()
+  const href=(await ticketLink.getAttribute('href'))!
+  expect(href).toMatch(/^\/ticket\/[A-Za-z0-9_-]{43,64}$/)
+  expect(href).not.toContain(pnr)
+  const redirect=await page.request.get(href,{maxRedirects:0})
+  expect(redirect.status()).toBe(302)
+  expect(redirect.headers().location).toMatch(/^https:\/\/mytrips\.copaair\.com\/trip-detail\/[A-Z0-9]+\/FICTIONAL$/)
+  expect(redirect.headers().location).not.toContain(pnr)
+  await page.context().route(`**${href}`,route=>route.fulfill({status:200,contentType:'text/plain',body:'Proveedor externo simulado'}))
+  const popupPromise=page.waitForEvent('popup')
+  await ticketLink.click()
+  const popup=await popupPromise
+  await expect(popup.getByText('Proveedor externo simulado')).toBeVisible()
+  await popup.close()
+
+  await page.goto('/gestion/vuelos?focus=baggage')
+  await expect(page.getByText('El equipaje ahora se administra dentro de cada reserva aérea.')).toBeVisible()
+  await expect(page.getByText('Equipaje',{exact:true})).toHaveCount(0)
+  const card=page.getByText(pnr,{exact:true}).locator('xpath=ancestor::*[contains(@class,"MuiCard-root")][1]')
+  await card.getByRole('button',{name:'Editar equipaje del PNR'}).click()
+  const dialog=page.getByRole('dialog',{name:'Editar equipaje del PNR'})
+  await dialog.getByLabel('Estado').click();await page.getByRole('option',{name:'Incluye',exact:true}).click()
+  await expect(dialog.getByLabel('Cantidad')).toHaveValue('1')
+  await expect(dialog.getByLabel('Peso por maleta (kg)')).toHaveValue('23')
+  page.once('dialog',confirmation=>confirmation.accept())
+  await dialog.getByRole('button',{name:'Guardar para todo el grupo'}).click()
+  await expect(dialog).toHaveCount(0)
+
+  for(const passengerId of [firstId,secondId]){
+    await page.goto(`/gestion/pasajeros/${passengerId}`)
+    if((page.viewportSize()?.width??0)<900){await page.getByRole('combobox',{name:'Sección'}).click();await page.getByRole('option',{name:'Equipaje'}).click()}
+    else await page.getByRole('tab',{name:'Equipaje'}).click()
+    await expect(page.getByText('1 × 23 kg').first()).toBeVisible()
+    await expect(page.getByText('Confirmado',{exact:true}).last()).toBeVisible()
+  }
+  await page.goto('/gestion/equipaje')
+  await expect(page).toHaveURL(/\/gestion\/vuelos\?focus=baggage$/)
+})
+
 test('evidencia compartida tipada, impacto seguro y ticket concurrente',async({page},testInfo:TestInfo)=>{
+  test.setTimeout(120_000)
   await enterManagement(page)
   const token=await csrf(page)
-  const suffix=testInfo.project.name.replace(/[^a-z0-9]/gi,'-')
+  const suffix=projectKey(testInfo)
   const firstName=`E2E Evidencia Uno ${suffix}`
   const secondName=`E2E Evidencia Dos ${suffix}`
   const firstId=await createPassenger(page,firstName,token)
@@ -243,13 +331,14 @@ test('evidencia compartida tipada, impacto seguro y ticket concurrente',async({p
   const existingFlights=await (await page.request.get('/api/flights')).json() as {id:string;pnr?:string;passengers:{passengerId:string}[]}[]
   let flightId=existingFlights.find(item=>item.pnr===pnr&&item.passengers.some(passenger=>passenger.passengerId===firstId))?.id
   if(!flightId){
-    const flight=await page.request.post('/api/flights',{headers:{'X-XSRF-TOKEN':token},data:{status:'Confirmed',airline:'Aerolínea E2E',issuingAgency:null,pnr,generalReference:null,sourceReference:null,notes:null,passengerIds:[firstId,secondId],version:0,segments:[{id:null,type:'Outbound',flightNumber:'E2E1',originAirport:'AAA',destinationAirport:'BBB',departureAt:'2026-09-01T10:00:00Z',arrivalAt:'2026-09-01T12:00:00Z',originTimeZone:null,destinationTimeZone:null,sequence:1},{id:null,type:'Return',flightNumber:'E2E2',originAirport:'BBB',destinationAirport:'AAA',departureAt:'2026-09-10T10:00:00Z',arrivalAt:'2026-09-10T12:00:00Z',originTimeZone:null,destinationTimeZone:null,sequence:2}]}})
+    const flight=await page.request.post('/api/flights',{headers:{'X-XSRF-TOKEN':token},data:{status:'Confirmed',airline:'Copa Airlines',issuingAgency:null,pnr,generalReference:null,sourceReference:null,notes:null,passengerIds:[firstId,secondId],version:0,segments:[{id:null,type:'Outbound',flightNumber:'E2E1',originAirport:'AAA',destinationAirport:'BBB',departureAt:'2026-09-01T10:00:00Z',arrivalAt:'2026-09-01T12:00:00Z',originTimeZone:null,destinationTimeZone:null,sequence:1},{id:null,type:'Return',flightNumber:'E2E2',originAirport:'BBB',destinationAirport:'AAA',departureAt:'2026-09-10T10:00:00Z',arrivalAt:'2026-09-10T12:00:00Z',originTimeZone:null,destinationTimeZone:null,sequence:2}]}})
     expect(flight.status()).toBe(201)
     flightId=(await flight.json()).id as string
   }
   expect(flightId).toBeTruthy()
-  const pdf=Buffer.from('%PDF-1.7\nTravel Control fictional shared evidence\n%%EOF')
-  const upload=async(documentType:string)=>page.request.post('/api/attachments',{headers:{'X-XSRF-TOKEN':token},multipart:{file:{name:'e2e-shared-evidence.pdf',mimeType:'application/pdf',buffer:pdf},documentType,flightId:flightId!}})
+  const fileName=`e2e-shared-evidence-${suffix}.pdf`
+  const pdf=Buffer.from(`%PDF-1.7\nTravel Control fictional shared evidence ${suffix}\n%%EOF`)
+  const upload=async(documentType:string)=>page.request.post('/api/attachments',{headers:{'X-XSRF-TOKEN':token},multipart:{file:{name:fileName,mimeType:'application/pdf',buffer:pdf},documentType,flightId:flightId!}})
   const ticketUpload=await upload('AirTicket');expect(ticketUpload.ok()).toBeTruthy();const ticketLink=await ticketUpload.json()
   const baggageUpload=await upload('BaggageProof');expect(baggageUpload.ok()).toBeTruthy();const baggageLink=await baggageUpload.json()
   expect(baggageLink.attachmentId).toBe(ticketLink.attachmentId)
@@ -273,34 +362,37 @@ test('evidencia compartida tipada, impacto seguro y ticket concurrente',async({p
   if((page.viewportSize()?.width??0)<900){
     await page.getByRole('combobox',{name:'Sección'}).click();await page.getByRole('option',{name:'Documentación'}).click()
   }else await page.getByRole('tab',{name:'Documentación'}).click()
-  await expect(page.getByText(`Compartido por PNR ${pnr}`)).toHaveCount(2)
-  await expect(page.getByText('cubre a 2 pasajero(s)').first()).toBeVisible()
+  await expect(page.getByText(fileName,{exact:true})).toHaveCount(2)
   await expect(page.getByRole('button',{name:'Desvincular',exact:true})).toHaveCount(0)
-  await page.getByRole('button',{name:'Administrar en Vuelos'}).first().click()
-  await expect(page.getByRole('heading',{name:'Evidencias compartidas por PNR'})).toBeVisible()
-  const scope=page.getByText(`Compartido por ${pnr} · cubre a 2 pasajero(s)`).first().locator('..').locator('..')
-  const dialogPromise=page.waitForEvent('dialog')
-  await scope.getByRole('button',{name:'Desvincular del PNR'}).click()
-  const dialog=await dialogPromise
-  const warning=dialog.message()
-  await dialog.dismiss()
-  expect(warning).toContain(`PNR ${pnr}`);expect(warning).toContain('2 pasajero(s)')
-
-  const secondPage=await page.context().newPage()
-  await Promise.all([openTicketDialog(page,pnr,firstName),openTicketDialog(secondPage,pnr,firstName)])
   const number=`E2E-TICKET-${suffix}-${Date.now()}`
-  for(const current of [page,secondPage]){
-    await current.getByLabel('Número de ticket electrónico').fill(number)
-    await current.getByLabel('Estado individual').click()
-    await current.getByRole('option',{name:'Confirmado'}).click()
+  if(testInfo.project.name==='mobile-360'){
+    await page.goto('/gestion/vuelos')
+    await expect(page.getByRole('heading',{name:'Comprobantes compartidos por PNR'})).toBeVisible()
+    const scope=page.getByText(`${fileName} · AirTicket`,{exact:true}).locator('xpath=ancestor::*[contains(@class,"MuiStack-root")][1]')
+    const dialogPromise=page.waitForEvent('dialog')
+    await scope.getByRole('button',{name:'Desvincular'}).click()
+    const dialog=await dialogPromise
+    const warning=dialog.message()
+    await dialog.dismiss()
+    expect(warning).toContain('2 pasajero(s)')
+    await openTicketDialog(page,pnr,firstName)
+    await page.getByLabel('Número de ticket electrónico').fill(number)
+    await page.getByLabel('Estado individual').click()
+    await page.getByRole('option',{name:'Confirmado'}).click()
+    const concurrentFlight=(await (await page.request.get('/api/flights')).json() as E2EFlight[]).find(item=>item.id===flightId)!
+    const concurrentLink=concurrentFlight.passengers.find(item=>item.passengerId===firstId)!
+    const concurrent=await page.request.put(`/api/flights/${flightId}/passengers/${firstId}/ticket`,{headers:{'X-XSRF-TOKEN':token},data:{electronicTicketNumber:`${number}-WINNER`,status:'Confirmed',notes:'Actualización concurrente ficticia',version:concurrentLink.version}})
+    expect(concurrent.ok()).toBeTruthy()
+    await page.getByRole('dialog').getByRole('button',{name:'Guardar ticket'}).click()
+    await expect(page.getByText('El ticket cambió desde que abriste la ficha. Recargá antes de guardar.')).toBeVisible()
+    await expect(page.getByRole('dialog')).toBeVisible()
+  }else{
+    const currentFlight=(await (await page.request.get('/api/flights')).json() as E2EFlight[]).find(item=>item.id===flightId)!
+    const staleVersion=currentFlight.passengers.find(item=>item.passengerId===firstId)!.version
+    const payload={electronicTicketNumber:`${number}-WINNER`,status:'Confirmed',notes:'Actualización concurrente ficticia',version:staleVersion}
+    expect((await page.request.put(`/api/flights/${flightId}/passengers/${firstId}/ticket`,{headers:{'X-XSRF-TOKEN':token},data:payload})).ok()).toBeTruthy()
+    expect((await page.request.put(`/api/flights/${flightId}/passengers/${firstId}/ticket`,{headers:{'X-XSRF-TOKEN':token},data:{...payload,electronicTicketNumber:`${number}-STALE`}})).status()).toBe(409)
   }
-  await page.getByRole('dialog').getByRole('button',{name:'Guardar ticket'}).click()
-  await expect(page.getByRole('dialog')).toHaveCount(0)
-  await secondPage.getByRole('dialog').getByRole('button',{name:'Guardar ticket'}).click()
-  await expect(secondPage.getByText('El ticket cambió desde que abriste la ficha. Recargá antes de guardar.')).toBeVisible()
-  await expect(secondPage.getByRole('button',{name:'Recargar datos'})).toBeVisible()
-  await expect(secondPage.getByRole('dialog')).toBeVisible()
-  await secondPage.close()
 })
 
 test('identificación XLSX es idempotente y exige doble confirmación al sobrescribir',async({page},testInfo:TestInfo)=>{

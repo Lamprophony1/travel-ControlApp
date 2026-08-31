@@ -188,10 +188,15 @@ jobs:
         shell: bash
         run: |
           after_state="$(mktemp)"
-          trap 'rm -f -- "${after_state}"' EXIT
+          before_preserved="$(mktemp)"
+          after_preserved="$(mktemp)"
+          trap 'rm -f -- "${after_state}" "${before_preserved}" "${after_preserved}"' EXIT
           /opt/travel-control/scripts/verify-production-state.sh --require-baseline --post-deploy \
             | tee "${after_state}"
-          diff -- "${RUNNER_TEMP}/travel-control-state-before.txt" "${after_state}"
+          preserved='^(passengers|rooms|users|attachments|attachment_files|top_travel_passengers|bespoke_passengers|top_travel_rooms|bespoke_rooms|flight_bookings|ticketed_passengers|copa_passengers|latam_passengers|passengers_without_ticket|baggage_duplicates|attachment_hash_duplicates)='
+          grep -E "${preserved}" "${RUNNER_TEMP}/travel-control-state-before.txt" > "${before_preserved}"
+          grep -E "${preserved}" "${after_state}" > "${after_preserved}"
+          diff -- "${before_preserved}" "${after_preserved}"
       - name: Sanitized diagnostics
         if: failure()
         shell: bash

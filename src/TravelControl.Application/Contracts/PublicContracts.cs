@@ -3,7 +3,7 @@ using TravelControl.Domain;
 namespace TravelControl.Application.Contracts;
 
 public sealed record PublicRequirementDto(string Key, string Label, VerificationStatus Status);
-public sealed record PublicFlightDto(string Airline, VerificationStatus TicketStatus);
+public sealed record PublicFlightDto(string Airline, VerificationStatus TicketStatus, bool HasTicketAccess, string? TicketAccessPath);
 public sealed record PublicPassengerDto(
     Guid Id,
     string Name,

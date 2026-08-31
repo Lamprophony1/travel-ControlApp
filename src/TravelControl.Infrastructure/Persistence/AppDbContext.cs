@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
 using TravelControl.Domain;
 using TravelControl.Infrastructure.Identity;
 
@@ -70,6 +71,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
         {
             entity.HasKey(x => new { x.PassengerId, x.FlightBookingId });
             entity.Property(x => x.Version).IsConcurrencyToken();
+            entity.Property(x => x.BookingLookupLastName).HasMaxLength(160);
+            entity.Property(x => x.AirlineOrderId).HasMaxLength(160);
+            entity.Property(x => x.PublicTicketAccessToken).HasMaxLength(64);
+            entity.HasIndex(x => x.PublicTicketAccessToken).IsUnique();
         });
         builder.Entity<BaggageEntitlement>(entity =>
         {
@@ -121,6 +126,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
         {
             if (entry.State == EntityState.Added)
             {
+                if (string.IsNullOrWhiteSpace(entry.Entity.PublicTicketAccessToken))
+                    entry.Entity.PublicTicketAccessToken = CreatePublicToken();
                 entry.Entity.Version = Math.Max(1, entry.Entity.Version);
                 entry.Entity.UpdatedAt = now;
             }
@@ -131,5 +138,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
             }
         }
         return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public static string CreatePublicToken()
+    {
+        var bytes = RandomNumberGenerator.GetBytes(32);
+        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 }

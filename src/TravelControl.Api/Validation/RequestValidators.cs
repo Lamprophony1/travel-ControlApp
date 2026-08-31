@@ -20,8 +20,24 @@ public sealed class UpdatePassengerValidator : AbstractValidator<UpdatePassenger
     {
         RuleFor(x => x.FullName).NotEmpty().MaximumLength(220);
         RuleFor(x => x.Email).EmailAddress().When(x => !string.IsNullOrWhiteSpace(x.Email));
-        RuleFor(x => x.DocumentationExceptionReason).NotEmpty().When(x => x.DocumentationStatus == VerificationStatus.NotApplicable)
-            .WithMessage("No aplica requiere una justificación.");
+    }
+}
+
+public sealed class FlightBaggageValidator : AbstractValidator<FlightBaggageRequest>
+{
+    public FlightBaggageValidator()
+    {
+        RuleFor(x => x.Status).Must(x => x != VerificationStatus.NotApplicable)
+            .WithMessage("No aplica solo se admite como excepción documentada fuera del flujo normal.");
+        RuleFor(x => x.CheckedBagCount).GreaterThanOrEqualTo(0);
+        RuleFor(x => x.CheckedBagWeightKg).GreaterThanOrEqualTo(0);
+        When(x => x.Status == VerificationStatus.Confirmed, () =>
+        {
+            RuleFor(x => x.CheckedBagCount).GreaterThanOrEqualTo(1);
+            RuleFor(x => x.CheckedBagWeightKg).GreaterThanOrEqualTo(23);
+            RuleFor(x => x.AppliesOutbound).Equal(true);
+            RuleFor(x => x.AppliesReturn).Equal(true);
+        });
     }
 }
 
@@ -56,16 +72,6 @@ public sealed class FlightBookingValidator : AbstractValidator<FlightBookingRequ
         When(x => x.Status == VerificationStatus.Confirmed, () =>
         {
             RuleFor(x => x.Airline).NotEmpty(); RuleFor(x => x.Pnr).NotEmpty();
-            RuleFor(x => x.Segments).Must(x => x.Any(s => s.Type == SegmentType.Outbound)).WithMessage("Falta un segmento de ida.");
-            RuleFor(x => x.Segments).Must(x => x.Any(s => s.Type == SegmentType.Return)).WithMessage("Falta un segmento de regreso.");
-            RuleForEach(x => x.Segments).ChildRules(segment =>
-            {
-                segment.RuleFor(x => x.FlightNumber).NotEmpty();
-                segment.RuleFor(x => x.OriginAirport).NotEmpty();
-                segment.RuleFor(x => x.DestinationAirport).NotEmpty();
-                segment.RuleFor(x => x.DepartureAt).NotNull();
-                segment.RuleFor(x => x.ArrivalAt).NotNull();
-            });
         });
     }
 }

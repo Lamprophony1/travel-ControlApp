@@ -81,7 +81,7 @@ Más detalle: [arquitectura](docs/ARCHITECTURE.md), [acceso público](docs/PUBLI
 
 ## Endurecimiento de coherencia
 
-La clasificación documental autoritativa vive en `AttachmentLink.EvidenceType`: un único archivo deduplicado por hash puede actuar como ticket aéreo y comprobante de maleta para el mismo PNR. Los campos de destino y `DocumentType` de `Attachment` permanecen temporalmente como compatibilidad de rollback, pero el código nuevo no los usa para resolver evidencia. La ficha individual solo desvincula evidencia directa; los vínculos heredados se administran en su PNR, habitación o equipaje con una advertencia de alcance.
+Un único archivo deduplicado por hash puede actuar como ticket aéreo y comprobante de maleta para el mismo PNR mediante distintos `AttachmentLink.EvidenceType`. Los campos de destino y `DocumentType` de `Attachment` permanecen temporalmente para rollback. Documentación ya no se resuelve con adjuntos: depende exclusivamente de un acceso oficial verificado. Todo comprobante nuevo de equipaje se administra en Vuelos y se vincula al PNR.
 
 `TripReadinessService` alimenta dashboard público, dashboard privado y Excel. Un viaje no muestra 100 % si queda cualquier bloqueante global. El PNR también es derivado: su estado no se edita manualmente, y cada ticket individual usa `Version`, `UpdatedAt` y `UpdatedById` para rechazar sobrescrituras con 409.
 

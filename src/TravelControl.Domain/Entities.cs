@@ -116,6 +116,16 @@ public sealed class FlightBooking : Entity
     public string? Pnr { get; set; }
     public string? GeneralReference { get; set; }
     public string? SourceReference { get; set; }
+    public VerificationStatus BaggageStatus { get; set; } = VerificationStatus.ToVerify;
+    public bool CheckedBagIncluded { get; set; }
+    public int CheckedBagCount { get; set; }
+    public decimal CheckedBagWeightKg { get; set; }
+    public bool BaggageAppliesOutbound { get; set; }
+    public bool BaggageAppliesReturn { get; set; }
+    public string? BaggageSourceReference { get; set; }
+    public string? BaggageNotes { get; set; }
+    public DateTimeOffset? BaggageVerifiedAt { get; set; }
+    public Guid? BaggageVerifiedById { get; set; }
     public DateTimeOffset? VerifiedAt { get; set; }
     public Guid? VerifiedById { get; set; }
     public string? Notes { get; set; }
@@ -146,6 +156,13 @@ public sealed class PassengerFlight
     public FlightBooking FlightBooking { get; set; } = null!;
     public string? ElectronicTicketNumber { get; set; }
     public VerificationStatus TicketStatus { get; set; } = VerificationStatus.ToVerify;
+    public string? BookingLookupLastName { get; set; }
+    public string? AirlineOrderId { get; set; }
+    public string? TicketAccessUrl { get; set; }
+    public TicketAccessStatus TicketAccessStatus { get; set; } = TicketAccessStatus.Missing;
+    public string PublicTicketAccessToken { get; set; } = string.Empty;
+    public DateTimeOffset? TicketAccessGeneratedAt { get; set; }
+    public DateTimeOffset? TicketAccessVerifiedAt { get; set; }
     public string? Notes { get; set; }
     public long Version { get; set; } = 1;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;

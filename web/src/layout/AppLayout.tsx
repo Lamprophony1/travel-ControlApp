@@ -3,7 +3,6 @@ import AssignmentLateIcon from '@mui/icons-material/AssignmentLate'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 import HistoryIcon from '@mui/icons-material/History'
 import HotelIcon from '@mui/icons-material/Hotel'
-import LuggageIcon from '@mui/icons-material/Luggage'
 import MenuIcon from '@mui/icons-material/Menu'
 import PeopleIcon from '@mui/icons-material/People'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
@@ -17,7 +16,7 @@ import { UpdatePrompt } from './UpdatePrompt'
 const items = [
   {path:'/gestion',label:'Dashboard',icon:<DashboardIcon/>},{path:'/gestion/pasajeros',label:'Pasajeros',icon:<PeopleIcon/>},
   {path:'/gestion/habitaciones',label:'Habitaciones',icon:<HotelIcon/>},{path:'/gestion/vuelos',label:'Vuelos',icon:<AirplanemodeActiveIcon/>},
-  {path:'/gestion/equipaje',label:'Equipaje',icon:<LuggageIcon/>},{path:'/gestion/pendientes',label:'Pendientes',icon:<AssignmentLateIcon/>},
+  {path:'/gestion/pendientes',label:'Pendientes',icon:<AssignmentLateIcon/>},
   {path:'/gestion/importar',label:'Importar / exportar',icon:<UploadFileIcon/>,admin:true},{path:'/gestion/usuarios',label:'Usuarios',icon:<ManageAccountsIcon/>,admin:true},
   {path:'/gestion/auditoria',label:'Auditoría',icon:<HistoryIcon/>,admin:true}
 ]

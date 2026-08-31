@@ -24,7 +24,7 @@ public sealed class PassengerQueryService(AppDbContext db, EvidenceResolver evid
         return new(passenger.Id, passenger.FullName, MaskPassport(passenger.PassportNumber), state.PassportStatus,
             passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode, passenger.RoomReservation?.Hotel, passenger.RoomReservation?.RoomType,
             passenger.RoomReservation?.CheckIn, passenger.RoomReservation?.CheckOut, passenger.RoomReservation?.Nights,
-            passenger.DocumentationStatus, state.OverallStatus, state.ProgressPercent, state.Requirements, state.Alerts,
+            state.Requirements.Single(x => x.Key == "documentation").Status, state.OverallStatus, state.ProgressPercent, state.Requirements, state.Alerts,
             Flights(passenger), passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
     }
 
@@ -34,14 +34,14 @@ public sealed class PassengerQueryService(AppDbContext db, EvidenceResolver evid
         return new(passenger.Id, passenger.FullName, MaskPassport(passenger.PassportNumber), state.PassportStatus,
             passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode, passenger.RoomReservation?.Hotel, passenger.RoomReservation?.RoomType,
             passenger.RoomReservation?.CheckIn, passenger.RoomReservation?.CheckOut, passenger.RoomReservation?.Nights,
-            passenger.DocumentationStatus, state.OverallStatus, state.ProgressPercent, state.Requirements, state.Alerts,
+            state.Requirements.Single(x => x.Key == "documentation").Status, state.OverallStatus, state.ProgressPercent, state.Requirements, state.Alerts,
             Flights(passenger), passenger.NextAction, passenger.NextActionDueDate, passenger.UpdatedAt, passenger.Version);
     }
 
     private static IReadOnlyList<PassengerFlightSummary> Flights(Passenger passenger) => passenger.PassengerFlights
         .OrderBy(x => x.FlightBooking.Airline).ThenBy(x => x.FlightBooking.Pnr)
         .Select(x => new PassengerFlightSummary(x.FlightBookingId, x.FlightBooking.Airline, x.FlightBooking.Pnr,
-            x.TicketStatus, x.FlightBooking.Segments.Count > 0))
+            x.TicketStatus, x.TicketAccessStatus, x.FlightBooking.Segments.Count > 0))
         .ToArray();
 
     public static string MaskPassport(string? value)

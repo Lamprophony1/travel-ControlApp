@@ -122,7 +122,14 @@ public sealed class PublicReadService(
         var missing = state.Requirements.Where(x => !BusinessRules.IsResolved(x)).Select(x => x.Label).ToArray();
         var flights = passenger.PassengerFlights.Where(x => !string.IsNullOrWhiteSpace(x.FlightBooking.Airline))
             .OrderBy(x => x.FlightBooking.Airline)
-            .Select(x => new PublicFlightDto(PublicAirline(x.FlightBooking.Airline!), x.TicketStatus))
+            .Select(x =>
+            {
+                var available = x.TicketAccessStatus == TicketAccessStatus.Verified
+                    && TicketAccessLinkService.IsSafeOfficialUrl(x.TicketAccessUrl)
+                    && !string.IsNullOrWhiteSpace(x.PublicTicketAccessToken);
+                return new PublicFlightDto(PublicAirline(x.FlightBooking.Airline!), x.TicketStatus,
+                    available, available ? $"/ticket/{x.PublicTicketAccessToken}" : null);
+            })
             .ToArray();
         return new(passenger.Id, PublicName(passenger), passenger.PrimaryOperator?.Name, passenger.RoomReservation?.InternalCode,
             passenger.RoomReservation?.Hotel, passenger.RoomReservation?.RoomType, passenger.RoomReservation?.CheckIn,
@@ -153,7 +160,6 @@ public sealed class PublicReadService(
     private static IReadOnlyList<string> SanitizeAlerts(IEnumerable<string> alerts) => alerts.Select(x => x switch
     {
         BusinessRules.TopTravelPropertyAlert => "Propiedad específica del hotel pendiente",
-        BusinessRules.StaleDocumentationAlert => BusinessRules.StaleDocumentationAlert,
         "Pasajero sin habitación" => "Habitación pendiente",
         "Pasaporte vencido antes del regreso" => "Estado de pasaporte requiere atención",
         "Fechas de alojamiento inconsistentes" => "Fechas de alojamiento inconsistentes",

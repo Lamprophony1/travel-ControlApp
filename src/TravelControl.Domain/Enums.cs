@@ -10,3 +10,4 @@ public enum SegmentType { Outbound, Return }
 public enum FollowUpStatus { Open, InProgress, Closed }
 public enum FollowUpPriority { Low, Medium, High, Critical }
 public enum DocumentType { Passport, AirTicket, HotelVoucher, BaggageProof, Other }
+public enum TicketAccessStatus { Missing, Generated, Verified, Invalid }

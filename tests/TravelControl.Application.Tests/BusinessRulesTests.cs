@@ -24,16 +24,14 @@ public sealed class BusinessRulesTests
     }
 
     [Fact]
-    public void Not_applicable_is_resolved_only_with_a_reason()
+    public void Legacy_documentation_status_is_ignored()
     {
         var passenger = Passenger();
         passenger.DocumentationStatus = VerificationStatus.NotApplicable;
-        var withoutReason = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1)).Requirements.Single(x => x.Key == "documentation");
-        Assert.False(BusinessRules.IsResolved(withoutReason));
         passenger.DocumentationExceptionReason = "Excepción ficticia justificada";
-        var withReason = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1)).Requirements.Single(x => x.Key == "documentation");
-        Assert.True(BusinessRules.IsResolved(withReason));
-        Assert.Equal(VerificationStatus.NotApplicable, withReason.Status);
+        var documentation = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1)).Requirements.Single(x => x.Key == "documentation");
+        Assert.False(BusinessRules.IsResolved(documentation));
+        Assert.Equal(VerificationStatus.ToVerify, documentation.Status);
     }
 
     [Fact]
@@ -42,15 +40,11 @@ public sealed class BusinessRulesTests
         var passenger = Passenger();
         var room = new RoomReservation { InternalCode = "TEST", Status = VerificationStatus.Confirmed, ExpectedCapacity = 1 };
         room.Passengers.Add(passenger); passenger.RoomReservation = room;
-        var booking = new FlightBooking { TripId = Guid.NewGuid(), Status = VerificationStatus.Confirmed };
+        var booking = new FlightBooking { TripId = Guid.NewGuid(), Status = VerificationStatus.Confirmed,
+            BaggageStatus = VerificationStatus.Confirmed, CheckedBagIncluded = true, CheckedBagCount = 1,
+            CheckedBagWeightKg = 20, BaggageAppliesOutbound = true, BaggageAppliesReturn = true };
         var link = new PassengerFlight { Passenger = passenger, FlightBooking = booking, TicketStatus = VerificationStatus.Confirmed };
         passenger.PassengerFlights.Add(link);
-        var baggage = new BaggageEntitlement
-        {
-            Passenger = passenger, FlightBookingId = booking.Id, Status = VerificationStatus.Confirmed,
-            CheckedBagCount = 1, WeightPerBagKg = 20, AppliesOutbound = true, AppliesReturn = true
-        };
-        passenger.BaggageEntitlements.Add(baggage);
         var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
         Assert.Equal(VerificationStatus.ToVerify, state.Requirements.Single(x => x.Key == "room").Status);
         Assert.Equal(VerificationStatus.ToVerify, state.Requirements.Single(x => x.Key == "flight").Status);
@@ -58,14 +52,22 @@ public sealed class BusinessRulesTests
     }
 
     [Fact]
-    public void Documentation_confirmation_becomes_stale_when_dependencies_are_invalid()
+    public void Documentation_depends_only_on_verified_ticket_access()
     {
         var passenger = Passenger();
         passenger.DocumentationStatus = VerificationStatus.Confirmed;
         passenger.PassportReviewStatus = VerificationStatus.Confirmed;
-        var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
-        Assert.Equal(VerificationStatus.ToVerify, state.Requirements.Single(x => x.Key == "documentation").Status);
-        Assert.Contains(BusinessRules.StaleDocumentationAlert, state.Alerts);
+        var link = ValidBooking(passenger, "DOC-001", VerificationStatus.Confirmed);
+
+        Assert.Equal(VerificationStatus.ToVerify, Documentation(passenger).Status);
+        link.TicketAccessUrl = "https://mytrips.copaair.com/trip-detail/ABC123/FICTIONAL";
+        link.TicketAccessStatus = TicketAccessStatus.Generated;
+        Assert.Equal(VerificationStatus.InProgress, Documentation(passenger).Status);
+        link.TicketAccessStatus = TicketAccessStatus.Verified;
+        Assert.Equal(VerificationStatus.Confirmed, Documentation(passenger).Status);
+        passenger.PassportReviewStatus = VerificationStatus.NotIncluded;
+        passenger.RoomReservation = null;
+        Assert.Equal(VerificationStatus.Confirmed, Documentation(passenger, new PassengerEvidenceState(HasAirTicketEvidence: false)).Status);
     }
 
     [Fact]
@@ -74,15 +76,13 @@ public sealed class BusinessRulesTests
         var passenger = Passenger();
         var validBooking = ValidBooking(passenger, "VALID-001", VerificationStatus.Confirmed);
         var pendingBooking = ValidBooking(passenger, "PENDING-001", VerificationStatus.ToVerify);
-        passenger.BaggageEntitlements.Add(new BaggageEntitlement
-        {
-            Passenger = passenger, FlightBookingId = validBooking.FlightBookingId, Status = VerificationStatus.Confirmed,
-            CheckedBagCount = 1, WeightPerBagKg = 23, AppliesOutbound = true, AppliesReturn = true
-        });
-        passenger.BaggageEntitlements.Add(new BaggageEntitlement
-        {
-            Passenger = passenger, FlightBookingId = pendingBooking.FlightBookingId, Status = VerificationStatus.ToVerify
-        });
+        validBooking.FlightBooking.BaggageStatus = VerificationStatus.Confirmed;
+        validBooking.FlightBooking.CheckedBagIncluded = true;
+        validBooking.FlightBooking.CheckedBagCount = 1;
+        validBooking.FlightBooking.CheckedBagWeightKg = 23;
+        validBooking.FlightBooking.BaggageAppliesOutbound = true;
+        validBooking.FlightBooking.BaggageAppliesReturn = true;
+        pendingBooking.FlightBooking.BaggageStatus = VerificationStatus.ToVerify;
 
         var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
 
@@ -155,7 +155,9 @@ public sealed class BusinessRulesTests
     public void Confirmed_ticket_requires_only_pnr_airline_and_confirmed_status()
     {
         var passenger = Passenger();
-        var booking = new FlightBooking { TripId = Guid.NewGuid(), Pnr = "FIXTURE-PNR", Airline = "Aerolínea ficticia" };
+        var booking = new FlightBooking { TripId = Guid.NewGuid(), Pnr = "FIXTURE-PNR", Airline = "Aerolínea ficticia",
+            BaggageStatus = VerificationStatus.Confirmed, CheckedBagIncluded = true, CheckedBagCount = 1,
+            CheckedBagWeightKg = 23, BaggageAppliesOutbound = true, BaggageAppliesReturn = true };
         var link = new PassengerFlight { Passenger = passenger, FlightBooking = booking, TicketStatus = VerificationStatus.Confirmed };
         booking.PassengerFlights.Add(link);
         passenger.PassengerFlights.Add(link);
@@ -187,20 +189,63 @@ public sealed class BusinessRulesTests
     public void Effective_ticket_allows_baggage_without_electronic_number_or_segments()
     {
         var passenger = Passenger();
-        var booking = new FlightBooking { TripId = Guid.NewGuid(), Pnr = "FIXTURE-PNR", Airline = "Aerolínea ficticia" };
+        var booking = new FlightBooking { TripId = Guid.NewGuid(), Pnr = "FIXTURE-PNR", Airline = "Aerolínea ficticia",
+            BaggageStatus = VerificationStatus.Confirmed, CheckedBagIncluded = true, CheckedBagCount = 1,
+            CheckedBagWeightKg = 23, BaggageAppliesOutbound = true, BaggageAppliesReturn = true };
         var link = new PassengerFlight { Passenger = passenger, FlightBooking = booking, FlightBookingId = booking.Id, TicketStatus = VerificationStatus.Confirmed };
         passenger.PassengerFlights.Add(link);
-        var baggage = new BaggageEntitlement
-        {
-            Passenger = passenger, FlightBookingId = booking.Id, Status = VerificationStatus.Confirmed,
-            CheckedBagCount = 1, WeightPerBagKg = 23, AppliesOutbound = true, AppliesReturn = true
-        };
-        passenger.BaggageEntitlements.Add(baggage);
-
         var state = BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1));
 
         Assert.True(BusinessRules.IsResolved(state.Requirements.Single(x => x.Key == "baggage")));
         Assert.Equal(VerificationStatus.ToVerify, passenger.DocumentationStatus);
+    }
+
+    [Fact]
+    public void Multiple_pnr_baggage_uses_required_precedence()
+    {
+        var passenger = Passenger();
+        var confirmed = ValidBooking(passenger, "ONE", VerificationStatus.Confirmed).FlightBooking;
+        confirmed.BaggageStatus = VerificationStatus.Confirmed;
+        confirmed.CheckedBagIncluded = true;
+        confirmed.CheckedBagCount = 1;
+        confirmed.CheckedBagWeightKg = 23;
+        confirmed.BaggageAppliesOutbound = confirmed.BaggageAppliesReturn = true;
+        var second = ValidBooking(passenger, "TWO", VerificationStatus.Confirmed).FlightBooking;
+        second.BaggageStatus = VerificationStatus.InProgress;
+        Assert.Equal(VerificationStatus.InProgress, Baggage(passenger).Status);
+        second.BaggageStatus = VerificationStatus.ToVerify;
+        Assert.Equal(VerificationStatus.ToVerify, Baggage(passenger).Status);
+        second.BaggageStatus = VerificationStatus.NotIncluded;
+        Assert.Equal(VerificationStatus.NotIncluded, Baggage(passenger).Status);
+    }
+
+    [Fact]
+    public void One_booking_baggage_value_applies_to_all_six_linked_passengers()
+    {
+        var booking = new FlightBooking
+        {
+            TripId = Guid.NewGuid(), Airline = "Aerolínea ficticia", Pnr = "GROUP-SIX",
+            Status = VerificationStatus.Confirmed, BaggageStatus = VerificationStatus.Confirmed,
+            CheckedBagIncluded = true, CheckedBagCount = 1, CheckedBagWeightKg = 23,
+            BaggageAppliesOutbound = true, BaggageAppliesReturn = true
+        };
+        var passengers = Enumerable.Range(1, 6).Select(index => new Passenger
+        {
+            FullName = $"Persona {index}", NormalizedName = $"PERSONA {index}", Trip = Passenger().Trip
+        }).ToArray();
+        foreach (var passenger in passengers)
+        {
+            var link = new PassengerFlight
+            {
+                Passenger = passenger, FlightBooking = booking, FlightBookingId = booking.Id,
+                TicketStatus = VerificationStatus.Confirmed
+            };
+            passenger.PassengerFlights.Add(link);
+            booking.PassengerFlights.Add(link);
+        }
+
+        Assert.All(passengers, passenger => Assert.Equal(VerificationStatus.Confirmed, Baggage(passenger).Status));
+        Assert.Single(passengers.SelectMany(x => x.PassengerFlights).Select(x => x.FlightBooking).Distinct());
     }
 
     private static PassengerFlight ValidBooking(Passenger passenger, string ticket, VerificationStatus status)
@@ -218,6 +263,12 @@ public sealed class BusinessRulesTests
         passenger.PassengerFlights.Add(link);
         return link;
     }
+
+    private static RequirementState Documentation(Passenger passenger, PassengerEvidenceState? evidence = null) =>
+        BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1), evidence ?? new PassengerEvidenceState())
+            .Requirements.Single(x => x.Key == "documentation");
+    private static RequirementState Baggage(Passenger passenger) =>
+        BusinessRules.CalculatePassenger(passenger, new DateOnly(2026, 1, 1)).Requirements.Single(x => x.Key == "baggage");
 
     [Theory]
     [InlineData("  José   Pérez ", "JOSE PEREZ")]

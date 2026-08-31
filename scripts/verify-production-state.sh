@@ -53,6 +53,17 @@ bespoke_rooms="$(scalar "SELECT COUNT(*) FROM \"RoomReservations\" r JOIN \"Oper
 baggage_duplicates="$(scalar 'SELECT COUNT(*) FROM (SELECT "PassengerId", "FlightBookingId" FROM "BaggageEntitlements" WHERE "FlightBookingId" IS NOT NULL GROUP BY "PassengerId", "FlightBookingId" HAVING COUNT(*) > 1);')"
 attachment_hash_duplicates="$(scalar 'SELECT COUNT(*) FROM (SELECT "Sha256" FROM "Attachments" GROUP BY "Sha256" HAVING COUNT(*) > 1);')"
 attachment_files="$(find "${APP_ROOT}/attachments" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+flight_bookings="$(scalar 'SELECT COUNT(*) FROM "FlightBookings" WHERE "Pnr" IS NOT NULL AND length(trim("Pnr")) > 0;')"
+ticketed_passengers="$(scalar 'SELECT COUNT(DISTINCT pf."PassengerId") FROM "PassengerFlights" pf JOIN "FlightBookings" f ON f."Id"=pf."FlightBookingId" WHERE pf."TicketStatus"=0 AND f."Pnr" IS NOT NULL AND length(trim(f."Pnr")) > 0 AND f."Airline" IS NOT NULL AND length(trim(f."Airline")) > 0;')"
+copa_passengers="$(scalar "SELECT COUNT(DISTINCT pf.\"PassengerId\") FROM \"PassengerFlights\" pf JOIN \"FlightBookings\" f ON f.\"Id\"=pf.\"FlightBookingId\" WHERE pf.\"TicketStatus\"=0 AND (f.\"Airline\" LIKE 'Copa%' OR upper(trim(f.\"Airline\"))='CM');")"
+latam_passengers="$(scalar "SELECT COUNT(DISTINCT pf.\"PassengerId\") FROM \"PassengerFlights\" pf JOIN \"FlightBookings\" f ON f.\"Id\"=pf.\"FlightBookingId\" WHERE pf.\"TicketStatus\"=0 AND (f.\"Airline\" LIKE 'LATAM%' OR upper(trim(f.\"Airline\"))='LA');")"
+passengers_without_ticket="$(( passengers - ticketed_passengers ))"
+baggage_confirmed="not_migrated"
+baggage_pending="not_migrated"
+baggage_not_included="not_migrated"
+ticket_access_verified="not_migrated"
+ticket_access_generated="not_migrated"
+ticket_access_missing="not_migrated"
 
 [[ "${baggage_duplicates}" == "0" ]] || { echo "Duplicate baggage records detected; migration stopped" >&2; exit 1; }
 [[ "${attachment_hash_duplicates}" == "0" ]] || { echo "Duplicate attachment hashes detected; migration stopped" >&2; exit 1; }
@@ -60,20 +71,34 @@ attachment_files="$(find "${APP_ROOT}/attachments" -maxdepth 1 -type f | wc -l |
 if [[ "${POST_DEPLOY}" == true ]]; then
   evidence_column="$(scalar "SELECT COUNT(*) FROM pragma_table_info('AttachmentLinks') WHERE name = 'EvidenceType';")"
   passenger_flight_version_column="$(scalar "SELECT COUNT(*) FROM pragma_table_info('PassengerFlights') WHERE name = 'Version';")"
+  ticket_access_columns="$(scalar "SELECT COUNT(*) FROM pragma_table_info('PassengerFlights') WHERE name IN ('BookingLookupLastName','AirlineOrderId','TicketAccessUrl','TicketAccessStatus','PublicTicketAccessToken','TicketAccessGeneratedAt','TicketAccessVerifiedAt');")"
+  flight_baggage_columns="$(scalar "SELECT COUNT(*) FROM pragma_table_info('FlightBookings') WHERE name IN ('BaggageStatus','CheckedBagIncluded','CheckedBagCount','CheckedBagWeightKg','BaggageAppliesOutbound','BaggageAppliesReturn','BaggageSourceReference','BaggageNotes','BaggageVerifiedAt','BaggageVerifiedById');")"
   [[ "${evidence_column}" == "1" ]] || { echo "EvidenceType column is missing" >&2; exit 1; }
   [[ "${passenger_flight_version_column}" == "1" ]] || { echo "PassengerFlight Version column is missing" >&2; exit 1; }
+  [[ "${ticket_access_columns}" == "7" ]] || { echo "Ticket access columns are missing" >&2; exit 1; }
+  [[ "${flight_baggage_columns}" == "10" ]] || { echo "Flight baggage columns are missing" >&2; exit 1; }
   invalid_evidence_types="$(scalar 'SELECT COUNT(*) FROM "AttachmentLinks" WHERE "EvidenceType" NOT BETWEEN 0 AND 4;')"
   invalid_link_targets="$(scalar 'SELECT COUNT(*) FROM "AttachmentLinks" WHERE (("PassengerId" IS NOT NULL) + ("RoomReservationId" IS NOT NULL) + ("FlightBookingId" IS NOT NULL) + ("BaggageEntitlementId" IS NOT NULL)) <> 1;')"
   duplicate_typed_links="$(scalar "SELECT COUNT(*) FROM (SELECT \"AttachmentId\", CASE WHEN \"PassengerId\" IS NOT NULL THEN 'P:' || \"PassengerId\" WHEN \"RoomReservationId\" IS NOT NULL THEN 'R:' || \"RoomReservationId\" WHEN \"FlightBookingId\" IS NOT NULL THEN 'F:' || \"FlightBookingId\" ELSE 'B:' || \"BaggageEntitlementId\" END AS target, \"EvidenceType\" FROM \"AttachmentLinks\" GROUP BY \"AttachmentId\", target, \"EvidenceType\" HAVING COUNT(*) > 1);")"
   legacy_links_missing="$(scalar 'SELECT COUNT(*) FROM "Attachments" a WHERE (a."PassengerId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."PassengerId"=a."PassengerId" AND l."EvidenceType"=a."DocumentType")) OR (a."RoomReservationId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."RoomReservationId"=a."RoomReservationId" AND l."EvidenceType"=a."DocumentType")) OR (a."FlightBookingId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."FlightBookingId"=a."FlightBookingId" AND l."EvidenceType"=a."DocumentType")) OR (a."BaggageEntitlementId" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "AttachmentLinks" l WHERE l."AttachmentId"=a."Id" AND l."BaggageEntitlementId"=a."BaggageEntitlementId" AND l."EvidenceType"=a."DocumentType"));')"
   invalid_ticket_versions="$(scalar 'SELECT COUNT(*) FROM "PassengerFlights" WHERE "Version" < 1;')"
   duplicate_tickets="$(scalar 'SELECT COUNT(*) FROM (SELECT "PassengerId", "FlightBookingId" FROM "PassengerFlights" GROUP BY "PassengerId", "FlightBookingId" HAVING COUNT(*) > 1);')"
+  duplicate_public_tokens="$(scalar 'SELECT COUNT(*) FROM (SELECT "PublicTicketAccessToken" FROM "PassengerFlights" GROUP BY "PublicTicketAccessToken" HAVING COUNT(*) > 1);')"
+  missing_public_tokens="$(scalar 'SELECT COUNT(*) FROM "PassengerFlights" WHERE "PublicTicketAccessToken" IS NULL OR length(trim("PublicTicketAccessToken")) < 43;')"
   [[ "${invalid_evidence_types}" == "0" ]] || { echo "Invalid evidence types detected" >&2; exit 1; }
   [[ "${invalid_link_targets}" == "0" ]] || { echo "Invalid attachment link targets detected" >&2; exit 1; }
   [[ "${duplicate_typed_links}" == "0" ]] || { echo "Duplicate typed attachment links detected" >&2; exit 1; }
   [[ "${legacy_links_missing}" == "0" ]] || { echo "Legacy attachment associations were not migrated" >&2; exit 1; }
   [[ "${invalid_ticket_versions}" == "0" ]] || { echo "Invalid ticket versions detected" >&2; exit 1; }
   [[ "${duplicate_tickets}" == "0" ]] || { echo "Duplicate passenger tickets detected" >&2; exit 1; }
+  [[ "${duplicate_public_tokens}" == "0" ]] || { echo "Duplicate public ticket tokens detected" >&2; exit 1; }
+  [[ "${missing_public_tokens}" == "0" ]] || { echo "Missing or weak public ticket tokens detected" >&2; exit 1; }
+  baggage_confirmed="$(scalar 'SELECT COUNT(*) FROM "FlightBookings" WHERE "BaggageStatus"=0;')"
+  baggage_pending="$(scalar 'SELECT COUNT(*) FROM "FlightBookings" WHERE "BaggageStatus" IN (1,2);')"
+  baggage_not_included="$(scalar 'SELECT COUNT(*) FROM "FlightBookings" WHERE "BaggageStatus"=3;')"
+  ticket_access_verified="$(scalar 'SELECT COUNT(*) FROM "PassengerFlights" WHERE "TicketAccessStatus"=2;')"
+  ticket_access_generated="$(scalar 'SELECT COUNT(*) FROM "PassengerFlights" WHERE "TicketAccessStatus"=1;')"
+  ticket_access_missing="$(scalar 'SELECT COUNT(*) FROM "PassengerFlights" WHERE "TicketAccessStatus"=0;')"
 fi
 
 if [[ "${REQUIRE_BASELINE}" == "--require-baseline" ]]; then
@@ -83,6 +108,10 @@ if [[ "${REQUIRE_BASELINE}" == "--require-baseline" ]]; then
   [[ "${bespoke_passengers}" == "2" ]] || { echo "Expected 2 Bespoke passengers; found ${bespoke_passengers}" >&2; exit 1; }
   [[ "${top_travel_rooms}" == "24" ]] || { echo "Expected 24 Top Travel rooms; found ${top_travel_rooms}" >&2; exit 1; }
   [[ "${bespoke_rooms}" == "1" ]] || { echo "Expected 1 Bespoke room; found ${bespoke_rooms}" >&2; exit 1; }
+  [[ "${ticketed_passengers}" == "42" ]] || { echo "Expected 42 ticketed passengers; found ${ticketed_passengers}" >&2; exit 1; }
+  [[ "${copa_passengers}" == "29" ]] || { echo "Expected 29 Copa passengers; found ${copa_passengers}" >&2; exit 1; }
+  [[ "${latam_passengers}" == "13" ]] || { echo "Expected 13 LATAM passengers; found ${latam_passengers}" >&2; exit 1; }
+  [[ "${passengers_without_ticket}" == "4" ]] || { echo "Expected 4 passengers without ticket; found ${passengers_without_ticket}" >&2; exit 1; }
 fi
 
 printf '%s\n' \
@@ -96,5 +125,16 @@ printf '%s\n' \
   "bespoke_passengers=${bespoke_passengers}" \
   "top_travel_rooms=${top_travel_rooms}" \
   "bespoke_rooms=${bespoke_rooms}" \
+  "flight_bookings=${flight_bookings}" \
+  "ticketed_passengers=${ticketed_passengers}" \
+  "copa_passengers=${copa_passengers}" \
+  "latam_passengers=${latam_passengers}" \
+  "passengers_without_ticket=${passengers_without_ticket}" \
+  "flight_bookings_baggage_confirmed=${baggage_confirmed}" \
+  "flight_bookings_baggage_pending=${baggage_pending}" \
+  "flight_bookings_baggage_not_included=${baggage_not_included}" \
+  "ticket_access_verified=${ticket_access_verified}" \
+  "ticket_access_generated=${ticket_access_generated}" \
+  "ticket_access_missing=${ticket_access_missing}" \
   "baggage_duplicates=${baggage_duplicates}" \
   "attachment_hash_duplicates=${attachment_hash_duplicates}"
